@@ -73,6 +73,25 @@ El proyecto usa `deploy_update.php` (paquete `.sck`) para actualizar sólo el
 código. `database.json` y `config.local.php` están protegidos (no se pisan).
 El token de deploy es el `DEPLOY_TOKEN` de `config.local.php` de cada VPS.
 
+## 5) Publicar una Release nueva (GitHub)
+
+Una Release = tag (p. ej. `v1.1`) + paquete `.tar.gz` descargable. Flujo:
+
+1. Sube a `main` el código que quieras distribuir (commit + push a
+   `rowrigo/SuperRadio`).
+2. En el clon de publicación (`/root/superradio-src`), ya sincronizado y limpio,
+   ejecuta el script de release (te pedirá tu token GitHub, scope `repo`):
+
+   ```bash
+   cd /root/superradio-src
+   bash pkg/release.sh v1.1
+   ```
+
+`pkg/release.sh` verifica que el clon esté limpio y al día con `origin/main`,
+genera el paquete (`bash pkg/make_package.sh <fecha>`), comprueba que **no**
+lleve `database.json` ni `config.local.php`, crea el tag/Release sobre `main`
+y sube el paquete como asset. Al final imprime la URL de descarga y el sha256.
+
 ## Notas / riesgos
 
 - Si algún día **importas** una `database.json` vieja con radios, debes usar la
