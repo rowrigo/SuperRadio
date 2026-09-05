@@ -122,6 +122,7 @@ render() { # render <tpl> <destino>
       -e "s|{{ADMIN_EMAIL}}|$EMAIL|g" \
       -e "s|{{ENCRYPT_KEY}}|$ENCRYPT_KEY|g" \
       -e "s|{{DEPLOY_TOKEN}}|$DEPLOY_TOKEN|g" \
+      -e "s|{{STREAM_HOST}}|$DOMAIN|g" \
       -e "s|{{SOURCE_PASS}}|$SOURCE_PASS|g" \
       -e "s|{{RELAY_PASS}}|$RELAY_PASS|g" \
       -e "s|{{ADMIN_PASS}}|$ADMIN_ICEPASS|g" \
