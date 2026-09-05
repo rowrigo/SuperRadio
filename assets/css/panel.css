@@ -1,0 +1,107 @@
+:root {
+    --bg-app: #080d1a;
+    --bg-side: #080d1a;
+    --bg-card: transparent;
+    --bg-input: transparent;
+    --primary: #0284c7;
+    --accent: #4ade80;
+    --danger: #ef4444;
+    --text-main: #f8fafc;
+    --text-muted: #94a3b8;
+    --border: #1e293b;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; padding: 0; background: var(--bg-app); color: var(--text-main); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; height: 100vh; overflow: hidden; }
+
+.app-container { display: grid; grid-template-columns: 340px 1fr; height: 100vh; width: 100vw; }
+
+/* SIDEBAR */
+.sidebar { background: var(--bg-side); border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 24px; gap: 20px; user-select: none; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-logo { font-size: 1.8rem; }
+.brand-title { font-size: 1.15rem; font-weight: 700; color: #38bdf8; margin: 0; }
+.brand-mount { font-size: 0.8rem; color: var(--text-muted); font-family: monospace; }
+
+.nav-menu { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.nav-item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 8px; background: transparent; border: 1px solid transparent; color: var(--text-muted); font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: all 0.2s; text-align: left; }
+.nav-item:hover { background: #152138; color: #fff; }
+.nav-item.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
+.autodj-box { background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+.autodj-title { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 6px; }
+.autodj-status { font-size: 0.95rem; font-weight: bold; margin-bottom: 10px; }
+
+/* MAIN CONTENT */
+.main-content { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.topbar { background: var(--bg-side); border-bottom: 1px solid var(--border); padding: 14px 28px; display: flex; justify-content: flex-start; align-items: center; gap: 14px; }
+.topbar .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.metrics-top { display: flex; gap: 20px; align-items: center; }
+.badge-live { background: rgba(74, 222, 128, 0.15); color: #4ade80; padding: 4px 12px; border-radius: 20px; font-weight: bold; font-size: 0.85rem; }
+.badge-off { background: rgba(239, 68, 68, 0.15); color: #ef4444; padding: 4px 12px; border-radius: 20px; font-weight: bold; font-size: 0.85rem; }
+
+.content-area { padding: 28px; overflow-y: auto; flex: 1; }
+.view { display: none; } .view.active { display: block; }
+
+/* CARDS & UI */
+.card { background: transparent; border: 1px solid var(--border); border-radius: 12px; padding: 22px; margin-bottom: 22px; }
+h2, h3, h4 { color: #38bdf8; margin-top: 0; }
+.btn { background: var(--primary); color: #fff; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; }
+.btn-success { background: #166534; } .btn-danger { background: var(--danger); } .btn-sm { padding: 5px 10px; font-size: 0.8rem; }
+input, select { background: transparent; border: 1px solid var(--border); color: #fff; padding: 10px 14px; border-radius: 6px; }
+.list-row { background: transparent; padding: 10px 15px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+
+/* GRID VIVO */
+.grid-params { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 15px; }
+.param-card { background: transparent; padding: 14px; border-radius: 8px; border: 1px solid var(--border); }
+.param-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
+.param-val { font-family: monospace; color: var(--accent); font-size: 1.05rem; }
+
+/* MUSICATECA */
+.music-layout { display: grid; grid-template-columns: 280px 1fr; gap: 20px; height: 500px; }
+.music-panel { background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 16px; display: flex; flex-direction: column; }
+.music-list { list-style: none; padding: 0; margin: 0; overflow-y: auto; flex: 1; }
+.folder-row { padding: 10px 12px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; border: 1px solid transparent; }
+.folder-row:hover { background: #152138; } .folder-row.active { background: var(--primary); color: #fff; }
+.file-row { padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
+.dropzone { border: 2px dashed #334155; border-radius: 8px; padding: 18px; text-align: center; background: transparent; margin-bottom: 15px; cursor: pointer; }
+.dropzone:hover { border-color: var(--primary); }
+
+/* ===== ESTÉTICA MINIMAL: esquinas rectas (SOLO cabina cliente .app-container) =====
+   En la cabina del cliente todo va con bordes rectos; solo los botones de acción
+   conservan el redondeo (botones .btn, <a/button class="btn...">, submit/button).
+   Se acota a .app-container para NO alterar otras páginas que cargan panel.css. */
+.app-container * { border-radius: 0 !important; }
+.app-container .btn, .app-container a[class*="btn"], .app-container button[class*="btn"], .app-container input[type="submit"], .app-container input[type="button"] { border-radius: 6px !important; }
+
+/* ===== RESPONSIVE CABINA: drawer lateral =====
+   En pantallas ≤ 992px el sidebar se oculta y se abre como cajón deslizante
+   desde la izquierda con un botón (hamburguesa) y overlay. */
+.nav-toggle, .app-scrim { display: none; }
+@media (max-width: 992px) {
+    .app-container { grid-template-columns: 1fr; }
+    .sidebar {
+        position: fixed; top: 0; bottom: 0; left: 0;
+        width: min(320px, 86vw); height: 100vh;
+        z-index: 1200; transform: translateX(-105%);
+        transition: transform 0.25s ease;
+    }
+    .sidebar.open { transform: none; box-shadow: 12px 0 40px rgba(0, 0, 0, 0.45); }
+    .app-scrim {
+        display: block; position: fixed; inset: 0; z-index: 1150;
+        background: rgba(2, 6, 17, 0.62); opacity: 0; visibility: hidden;
+        transition: opacity 0.25s ease, visibility 0.25s ease;
+    }
+    .app-scrim.show { opacity: 1; visibility: visible; }
+    .nav-toggle {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 40px; height: 40px; flex: 0 0 auto; cursor: pointer;
+        background: transparent; border: 1px solid var(--border); color: #fff;
+        padding: 0;
+    }
+    .nav-toggle:hover { background: #152138; }
+    .content-area { padding: 18px 14px; }
+    .topbar { padding: 10px 14px; }
+    .music-layout { grid-template-columns: 1fr; height: auto; }
+    .music-panel { min-height: 260px; }
+}

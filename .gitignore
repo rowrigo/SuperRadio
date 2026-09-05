@@ -1,0 +1,6 @@
+.aider*
+config.local.php
+database.json
+*.log
+superradio-package-*.tar.gz
+.mimocode/
