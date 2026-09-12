@@ -217,6 +217,15 @@ install -m 0755 "$TPL/radiopanel-autodj-watchdog.sh"      /usr/local/bin/radiopa
 systemctl daemon-reload
 if [ "$NO_RESTART" -eq 0 ]; then systemctl enable --now radiopanel-autodj-watchdog.timer; fi
 
+# ---------- Estadísticas de audiencia del stream (timer de ingesta) ----------
+# Lee los logs del stream (Icecast + nginx) cada 5 minutos para mantener las
+# estadísticas al día sin depender de que el cliente abra la vista.
+log "Instalando timer de estadísticas del stream (radiopanel-stats-ingest)..."
+install -m 0644 "$TPL/radiopanel-stats-ingest.service" /etc/systemd/system/radiopanel-stats-ingest.service
+install -m 0644 "$TPL/radiopanel-stats-ingest.timer"   /etc/systemd/system/radiopanel-stats-ingest.timer
+systemctl daemon-reload
+if [ "$NO_RESTART" -eq 0 ]; then systemctl enable --now radiopanel-stats-ingest.timer; fi
+
 # ---------- SSL (certbot) ----------
 if [ "$NO_SSL" -eq 0 ] && command -v certbot >/dev/null 2>&1; then
   log "Emitiendo certificado Let's Encrypt para $DOMAIN (requiere que el DNS ya apunte)..."

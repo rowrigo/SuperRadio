@@ -1,0 +1,11 @@
+[Unit]
+Description=Ingesta de estadísticas de audiencia del stream (SuperRadio)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+Nice=10
+ExecStart=/usr/bin/php /var/www/radiopanel/estadisticas_ingest.php

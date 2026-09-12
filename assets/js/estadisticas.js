@@ -1,15 +1,27 @@
-// --- ESTADÍSTICAS DE OYENTES (países / dispositivos / conexiones por período) ---
+// --- ESTADÍSTICAS DEL STREAM (conexiones / países / duración / pico) ---
 window.__estData = null;
 window.__estPeriod = 'mes';
 
 const EST_DV_ICON = { 0: '📱', 1: '📲', 2: '💻', 3: '🎛️', 4: '❔' };
+const EST_PERIOD_LBL = { hoy: 'Hoy', ayer: 'Ayer', semana: '7 días', mes: '30 días' };
 
 function estFmt(n) {
     n = parseInt(n || 0, 10);
     return n.toLocaleString('es');
 }
 
-window.renderEstadisticas = async function (force) {
+function estFmtDur(sec) {
+    sec = parseInt(sec || 0, 10);
+    if (sec <= 0) return '—';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    if (h > 0) return h + ' h ' + m + ' m';
+    if (m > 0) return m + ' m ' + s + ' s';
+    return s + ' s';
+}
+
+window.renderEstadisticas = async function () {
     const root = document.getElementById('view-estadisticas');
     if (!root) return;
     const paisesEl = document.getElementById('est-paises');
@@ -26,15 +38,14 @@ window.renderEstadisticas = async function (force) {
         const asof = document.getElementById('est-asof');
         if (asof) asof.textContent = j.as_of || '—';
 
-        // Tarjetas resumen (total conexiones + únicos) para los 4 períodos
-        const labels = { hoy: 'hoy', ayer: 'ayer', semana: 'semana', mes: 'mes' };
-        for (const key of Object.keys(labels)) {
+        // Tarjetas resumen (conexiones + únicos/pico) para los 4 períodos
+        for (const key of ['hoy', 'ayer', 'semana', 'mes']) {
             const p = j.periodos && j.periodos[key];
             const nEl = document.getElementById('est-n-' + key);
             const uEl = document.getElementById('est-u-' + key);
             if (p) {
                 if (nEl) nEl.textContent = estFmt(p.total);
-                if (uEl) uEl.textContent = estFmt(p.unicos) + ' oyentes únicos';
+                if (uEl) uEl.textContent = estFmt(p.unicos) + ' únicos · pico ' + estFmt(p.pico);
             }
         }
 
@@ -50,6 +61,11 @@ window.renderEstadisticas = async function (force) {
     }
 };
 
+function estSetText(id, txt) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = txt;
+}
+
 function drawEstBreakdown(period) {
     const data = window.__estData;
     const paisesEl = document.getElementById('est-paises');
@@ -57,9 +73,16 @@ function drawEstBreakdown(period) {
     if (!data || !data.periodos || !data.periodos[period]) return;
     const p = data.periodos[period];
 
+    // KPIs del período activo
+    estSetText('est-kpi-period', '(' + (EST_PERIOD_LBL[period] || '') + ')');
+    estSetText('est-kpi-pico', estFmt(p.pico));
+    estSetText('est-kpi-dur', estFmtDur(p.dur_total));
+    estSetText('est-kpi-media', estFmtDur(p.dur_media));
+    estSetText('est-kpi-unicos', estFmt(p.unicos));
+
     if (!paisesEl || !dispEl) return;
     if (!p.total) {
-        paisesEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">Sin conexiones en este período. Los datos empiezan a registrarse desde que activaste esta vista.</div>';
+        paisesEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">Sin conexiones en este período. Los datos se registran desde que el stream recibe oyentes.</div>';
         dispEl.innerHTML = '';
         return;
     }
@@ -76,7 +99,7 @@ function drawEstBreakdown(period) {
         bar.innerHTML = `
             <div class="est-row-head">
                 <div class="est-row-name"><span style="color:#64748b; min-width:14px;">${i + 1}</span>${row.nombre}<span class="cc">${row.cc}</span></div>
-                <div class="est-row-nums">${estFmt(row.c)} <small>${estFmt(row.u)} únicos</small></div>
+                <div class="est-row-nums">${estFmt(row.c)} <small>conexiones · ${estFmt(row.u)} únicos</small></div>
             </div>
             <div class="est-bar"><i style="width:${Math.max(2, Math.round((row.c / maxP) * 100))}%"></i></div>`;
         paisesEl.appendChild(bar);
@@ -100,7 +123,7 @@ function drawEstBreakdown(period) {
         bar.innerHTML = `
             <div class="est-row-head">
                 <div class="est-row-name"><span style="font-size:1rem;">${icon}</span>${row.nombre}</div>
-                <div class="est-row-nums">${estFmt(row.c)} <small>${estFmt(row.u)} únicos</small></div>
+                <div class="est-row-nums">${estFmt(row.c)} <small>conexiones · ${estFmt(row.u)} únicos</small></div>
             </div>
             <div class="est-bar"><i style="width:${Math.max(2, Math.round((row.c / maxD) * 100))}%"></i></div>`;
         dispEl.appendChild(bar);

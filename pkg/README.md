@@ -56,7 +56,11 @@ El instalador:
    (`radiopanel-autodj-watchdog.timer`) que la arranca tras un reboot o si se
    cae. Liquidsoap queda **fuera del cgroup de php-fpm**, así un
    reinicio/actualización de php-fpm ya no tumba los streams.
-6. Emite el certificado **Let's Encrypt** para tu dominio (`certbot --nginx --redirect`).
+6. Instala el timer **`radiopanel-stats-ingest.timer`** (cada 5 min), que lee los
+   logs del stream (Icecast + nginx) y mantiene al día las **Estadísticas del
+   Stream** de cada radio: conexiones al enlace de audio, país de origen,
+   duración y pico de oyentes simultáneos (sin guardar IPs).
+7. Emite el certificado **Let's Encrypt** para tu dominio (`certbot --nginx --redirect`).
 
 Flags útiles: `--no-ssl` (deja HTTP para probar antes del DNS),
 `--no-restart`, `--php-version=8.1`, `--src=...`.

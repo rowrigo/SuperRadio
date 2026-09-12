@@ -2,8 +2,8 @@
     <div class="card" style="border:1px solid var(--border); border-radius:12px; background:var(--card-bg,#0d1526); padding:20px;">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
             <div>
-                <h3 style="margin:0 0 4px 0; color:#fff;"><i class="fa-solid fa-chart-column" style="color:#38bdf8; margin-right:8px;"></i>Estadísticas de Oyentes</h3>
-                <div style="font-size:0.8rem; color:var(--text-muted);">Actualizado: <span id="est-asof">—</span></div>
+                <h3 style="margin:0 0 4px 0; color:#fff;"><i class="fa-solid fa-chart-column" style="color:#38bdf8; margin-right:8px;"></i>Estadísticas del Stream</h3>
+                <div style="font-size:0.8rem; color:var(--text-muted);">Conexiones a la señal de audio · Actualizado: <span id="est-asof">—</span></div>
             </div>
             <button type="button" class="btn btn-sm" id="est-refresh" onclick="renderEstadisticas(true)"
                     style="background:#0284c7; color:#fff; padding:8px 14px; border:none; border-radius:6px; font-weight:bold; cursor:pointer;">
@@ -11,8 +11,8 @@
             </button>
         </div>
 
-        <!-- Tarjetas resumen por período -->
-        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; margin-bottom:20px;">
+        <!-- Tarjetas resumen por período (conexiones al stream) -->
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; margin-bottom:16px;">
             <div class="est-card" data-p="hoy" style="background:#0b132b; border:1px solid #1e293b; border-radius:10px; padding:14px;">
                 <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px; color:#94a3b8; font-weight:700;">Hoy</div>
                 <div style="font-size:1.6rem; font-weight:800; color:#4ade80; margin:4px 0;" id="est-n-hoy">—</div>
@@ -35,10 +35,30 @@
             </div>
         </div>
 
+        <!-- KPIs del período activo -->
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; margin-bottom:18px;">
+            <div class="est-kpi">
+                <div class="est-kpi-lbl"><i class="fa-solid fa-signal" style="color:#38bdf8; margin-right:5px;"></i>Pico simultáneo</div>
+                <div class="est-kpi-val" id="est-kpi-pico">—</div>
+            </div>
+            <div class="est-kpi">
+                <div class="est-kpi-lbl"><i class="fa-solid fa-clock" style="color:#4ade80; margin-right:5px;"></i>Tiempo escuchado</div>
+                <div class="est-kpi-val" id="est-kpi-dur">—</div>
+            </div>
+            <div class="est-kpi">
+                <div class="est-kpi-lbl"><i class="fa-solid fa-stopwatch" style="color:#c084fc; margin-right:5px;"></i>Duración media</div>
+                <div class="est-kpi-val" id="est-kpi-media">—</div>
+            </div>
+            <div class="est-kpi">
+                <div class="est-kpi-lbl"><i class="fa-solid fa-users" style="color:#f59e0b; margin-right:5px;"></i>Oyentes únicos</div>
+                <div class="est-kpi-val" id="est-kpi-unicos">—</div>
+            </div>
+        </div>
+
         <!-- Desglose por país / dispositivo -->
         <div style="border-top:1px solid var(--border); padding-top:16px;">
             <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:14px;">
-                <strong style="color:#e2e8f0; font-size:0.95rem;"><i class="fa-solid fa-earth-americas" style="color:#4ade80; margin-right:6px;"></i>¿De dónde y con qué nos escuchan?</strong>
+                <strong style="color:#e2e8f0; font-size:0.95rem;"><i class="fa-solid fa-earth-americas" style="color:#4ade80; margin-right:6px;"></i>¿De dónde y con qué nos escuchan? <span id="est-kpi-period" style="color:#64748b; font-weight:600; font-size:0.8rem;"></span></strong>
                 <div id="est-tabs" style="display:flex; gap:6px; flex-wrap:wrap;">
                     <button type="button" class="est-tab" data-period="hoy" onclick="setEstPeriod('hoy',this)">Hoy</button>
                     <button type="button" class="est-tab" data-period="ayer" onclick="setEstPeriod('ayer',this)">Ayer</button>
@@ -65,7 +85,9 @@
 
         <div style="margin-top:16px; padding-top:12px; border-top:1px dashed #1e293b; font-size:0.72rem; color:#64748b;">
             <i class="fa-solid fa-shield-halved" style="margin-right:5px;"></i>
-            Privacidad: no se guardan direcciones IP, solo país y tipo de dispositivo. "Conexión" = cada sesión de audio (al abrir el reproductor o reconectar); "únicos" = oyentes distintos por período.
+            Se cuentan las <strong>conexiones a la señal de audio</strong> (el enlace del stream, no la página web), venga el oyente
+            del reproductor propio, de otro reproductor, de un dominio o directo a la IP. No se guardan direcciones IP: solo el país,
+            el tipo de dispositivo y la duración. "Conexión" = cada vez que alguien se conecta al stream; "únicos" = direcciones distintas por período.
         </div>
     </div>
 </div>
@@ -85,5 +107,8 @@
 .est-row-nums small { color:#64748b; font-weight:600; margin-left:6px; }
 .est-bar { height:5px; background:#1e293b; border-radius:99px; overflow:hidden; }
 .est-bar i { display:block; height:100%; background:linear-gradient(90deg,#0284c7,#4ade80); border-radius:99px; }
+.est-kpi { background:#0b132b; border:1px solid #1e293b; border-radius:10px; padding:12px 14px; }
+.est-kpi-lbl { font-size:0.72rem; text-transform:uppercase; letter-spacing:.5px; color:#94a3b8; font-weight:700; margin-bottom:4px; }
+.est-kpi-val { font-size:1.25rem; font-weight:800; color:#e2e8f0; }
 @media (max-width: 760px){ .est-cols { grid-template-columns: 1fr; } }
 </style>
