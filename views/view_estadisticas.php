@@ -11,47 +11,27 @@
             </button>
         </div>
 
-        <!-- Tarjetas resumen por período (conexiones al stream) -->
-        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; margin-bottom:16px;">
+        <!-- Tarjetas: en línea ahora + contador de CONEXIONES por período -->
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; margin-bottom:18px;">
+            <div class="est-card" data-p="online" style="background:#052e1a; border:1px solid #16a34a; border-radius:10px; padding:14px;">
+                <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px; color:#86efac; font-weight:700;"><i class="fa-solid fa-tower-broadcast" style="margin-right:4px;"></i>En línea ahora</div>
+                <div style="font-size:1.6rem; font-weight:800; color:#4ade80; margin:4px 0;" id="est-kpi-online">—</div>
+            </div>
             <div class="est-card" data-p="hoy" style="background:#0b132b; border:1px solid #1e293b; border-radius:10px; padding:14px;">
                 <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px; color:#94a3b8; font-weight:700;">Hoy</div>
                 <div style="font-size:1.6rem; font-weight:800; color:#4ade80; margin:4px 0;" id="est-n-hoy">—</div>
-                <div style="font-size:0.75rem; color:#64748b;" id="est-u-hoy"></div>
             </div>
             <div class="est-card" data-p="ayer" style="background:#0b132b; border:1px solid #1e293b; border-radius:10px; padding:14px;">
                 <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px; color:#94a3b8; font-weight:700;">Ayer</div>
                 <div style="font-size:1.6rem; font-weight:800; color:#38bdf8; margin:4px 0;" id="est-n-ayer">—</div>
-                <div style="font-size:0.75rem; color:#64748b;" id="est-u-ayer"></div>
             </div>
             <div class="est-card" data-p="semana" style="background:#0b132b; border:1px solid #1e293b; border-radius:10px; padding:14px;">
                 <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px; color:#94a3b8; font-weight:700;">7 días</div>
                 <div style="font-size:1.6rem; font-weight:800; color:#c084fc; margin:4px 0;" id="est-n-semana">—</div>
-                <div style="font-size:0.75rem; color:#64748b;" id="est-u-semana"></div>
             </div>
             <div class="est-card" data-p="mes" style="background:#0b132b; border:1px solid #1e293b; border-radius:10px; padding:14px;">
                 <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px; color:#94a3b8; font-weight:700;">30 días</div>
                 <div style="font-size:1.6rem; font-weight:800; color:#f59e0b; margin:4px 0;" id="est-n-mes">—</div>
-                <div style="font-size:0.75rem; color:#64748b;" id="est-u-mes"></div>
-            </div>
-        </div>
-
-        <!-- KPIs del período activo -->
-        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; margin-bottom:18px;">
-            <div class="est-kpi">
-                <div class="est-kpi-lbl"><i class="fa-solid fa-signal" style="color:#38bdf8; margin-right:5px;"></i>Pico simultáneo</div>
-                <div class="est-kpi-val" id="est-kpi-pico">—</div>
-            </div>
-            <div class="est-kpi">
-                <div class="est-kpi-lbl"><i class="fa-solid fa-clock" style="color:#4ade80; margin-right:5px;"></i>Tiempo escuchado</div>
-                <div class="est-kpi-val" id="est-kpi-dur">—</div>
-            </div>
-            <div class="est-kpi">
-                <div class="est-kpi-lbl"><i class="fa-solid fa-stopwatch" style="color:#c084fc; margin-right:5px;"></i>Duración media</div>
-                <div class="est-kpi-val" id="est-kpi-media">—</div>
-            </div>
-            <div class="est-kpi">
-                <div class="est-kpi-lbl"><i class="fa-solid fa-users" style="color:#f59e0b; margin-right:5px;"></i>Oyentes únicos</div>
-                <div class="est-kpi-val" id="est-kpi-unicos">—</div>
             </div>
         </div>
 
@@ -85,9 +65,57 @@
 
         <div style="margin-top:16px; padding-top:12px; border-top:1px dashed #1e293b; font-size:0.72rem; color:#64748b;">
             <i class="fa-solid fa-shield-halved" style="margin-right:5px;"></i>
-            Se cuentan las <strong>conexiones a la señal de audio</strong> (el enlace del stream, no la página web), venga el oyente
-            del reproductor propio, de otro reproductor, de un dominio o directo a la IP. No se guardan direcciones IP: solo el país,
-            el tipo de dispositivo y la duración. "Conexión" = cada vez que alguien se conecta al stream; "únicos" = direcciones distintas por período.
+            Cada casilla cuenta las <strong>conexiones a la señal de audio</strong> del período (cada vez que un dispositivo conecta al
+            enlace del stream, sin importar la IP ni cuántos equipos haya en la misma red). Si un reproductor se reconecta, cuenta como
+            una conexión nueva. <strong>"En línea ahora"</strong> son los que están escuchando en este momento (dato en vivo de Icecast).
+            No se guardan direcciones IP: solo un hash, país y dispositivo.
+        </div>
+    </div>
+
+    <!-- ============================================================= -->
+    <!-- ESTADÍSTICAS DEL PLAYER (visitas a la página pública)         -->
+    <!-- ============================================================= -->
+    <div class="card" style="border:1px solid var(--border); border-radius:12px; background:var(--card-bg,#0d1526); padding:20px; margin-top:18px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px;">
+            <div>
+                <h3 style="margin:0 0 4px 0; color:#fff;"><i class="fa-solid fa-globe" style="color:#34d399; margin-right:8px;"></i>Estadísticas del Player</h3>
+                <div style="font-size:0.8rem; color:var(--text-muted);">Visitas a la página pública / reproductor · Actualizado: <span id="pst-asof">—</span></div>
+            </div>
+        </div>
+
+        <!-- Tarjetas: en línea ahora + visitas por período -->
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; margin-bottom:18px;">
+            <div class="pst-card" data-p="online" style="background:#052e1a; border:1px solid #16a34a; border-radius:10px; padding:14px;">
+                <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px; color:#86efac; font-weight:700;"><i class="fa-solid fa-user-clock" style="margin-right:4px;"></i>En línea ahora</div>
+                <div style="font-size:1.6rem; font-weight:800; color:#4ade80; margin:4px 0;" id="pst-kpi-online">—</div>
+            </div>
+            <div class="pst-card" data-p="hoy" style="background:#0b132b; border:1px solid #1e293b; border-radius:10px; padding:14px;">
+                <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px; color:#94a3b8; font-weight:700;">Hoy</div>
+                <div style="font-size:1.6rem; font-weight:800; color:#4ade80; margin:4px 0;" id="pst-n-hoy">—</div>
+                <div id="pst-u-hoy" style="font-size:0.7rem; color:#64748b;">—</div>
+            </div>
+            <div class="pst-card" data-p="ayer" style="background:#0b132b; border:1px solid #1e293b; border-radius:10px; padding:14px;">
+                <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px; color:#94a3b8; font-weight:700;">Ayer</div>
+                <div style="font-size:1.6rem; font-weight:800; color:#38bdf8; margin:4px 0;" id="pst-n-ayer">—</div>
+                <div id="pst-u-ayer" style="font-size:0.7rem; color:#64748b;">—</div>
+            </div>
+            <div class="pst-card" data-p="semana" style="background:#0b132b; border:1px solid #1e293b; border-radius:10px; padding:14px;">
+                <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px; color:#94a3b8; font-weight:700;">7 días</div>
+                <div style="font-size:1.6rem; font-weight:800; color:#c084fc; margin:4px 0;" id="pst-n-semana">—</div>
+                <div id="pst-u-semana" style="font-size:0.7rem; color:#64748b;">—</div>
+            </div>
+            <div class="pst-card" data-p="mes" style="background:#0b132b; border:1px solid #1e293b; border-radius:10px; padding:14px;">
+                <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px; color:#94a3b8; font-weight:700;">30 días</div>
+                <div style="font-size:1.6rem; font-weight:800; color:#f59e0b; margin:4px 0;" id="pst-n-mes">—</div>
+                <div id="pst-u-mes" style="font-size:0.7rem; color:#64748b;">—</div>
+            </div>
+        </div>
+
+        <div style="padding-top:12px; border-top:1px dashed #1e293b; font-size:0.72rem; color:#64748b;">
+            <i class="fa-solid fa-eye" style="margin-right:5px;"></i>
+            Contador de <strong>visitas a la página pública</strong> (cada vez que alguien abre el reproductor). Es independiente de las
+            <strong>conexiones al stream</strong> de arriba: aquí se cuenta la <em>página</em>, no la señal de audio. <strong>"En línea ahora"</strong>
+            son las personas con la página abierta en este momento y <strong>"únicos"</strong> son visitantes distintos (por día). No se guardan IPs.
         </div>
     </div>
 </div>
@@ -107,8 +135,5 @@
 .est-row-nums small { color:#64748b; font-weight:600; margin-left:6px; }
 .est-bar { height:5px; background:#1e293b; border-radius:99px; overflow:hidden; }
 .est-bar i { display:block; height:100%; background:linear-gradient(90deg,#0284c7,#4ade80); border-radius:99px; }
-.est-kpi { background:#0b132b; border:1px solid #1e293b; border-radius:10px; padding:12px 14px; }
-.est-kpi-lbl { font-size:0.72rem; text-transform:uppercase; letter-spacing:.5px; color:#94a3b8; font-weight:700; margin-bottom:4px; }
-.est-kpi-val { font-size:1.25rem; font-weight:800; color:#e2e8f0; }
 @media (max-width: 760px){ .est-cols { grid-template-columns: 1fr; } }
 </style>

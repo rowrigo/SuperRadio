@@ -58,8 +58,8 @@ El instalador:
    reinicio/actualización de php-fpm ya no tumba los streams.
 6. Instala el timer **`radiopanel-stats-ingest.timer`** (cada 5 min), que lee los
    logs del stream (Icecast + nginx) y mantiene al día las **Estadísticas del
-   Stream** de cada radio: conexiones al enlace de audio, país de origen,
-   duración y pico de oyentes simultáneos (sin guardar IPs).
+   Stream** de cada radio: contador de conexiones al enlace de audio, país de
+   origen y oyentes en línea (sin guardar IPs).
 7. Emite el certificado **Let's Encrypt** para tu dominio (`certbot --nginx --redirect`).
 
 Flags útiles: `--no-ssl` (deja HTTP para probar antes del DNS),

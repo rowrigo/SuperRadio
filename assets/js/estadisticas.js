@@ -1,4 +1,4 @@
-// --- ESTADÍSTICAS DEL STREAM (conexiones / países / duración / pico) ---
+// --- ESTADÍSTICAS DEL STREAM (conexiones / países / duración / en línea) ---
 window.__estData = null;
 window.__estPeriod = 'mes';
 
@@ -10,20 +10,10 @@ function estFmt(n) {
     return n.toLocaleString('es');
 }
 
-function estFmtDur(sec) {
-    sec = parseInt(sec || 0, 10);
-    if (sec <= 0) return '—';
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    const s = sec % 60;
-    if (h > 0) return h + ' h ' + m + ' m';
-    if (m > 0) return m + ' m ' + s + ' s';
-    return s + ' s';
-}
-
 window.renderEstadisticas = async function () {
     const root = document.getElementById('view-estadisticas');
     if (!root) return;
+    renderPageStats(); // estadísticas del player (visitas) — independiente del stream
     const paisesEl = document.getElementById('est-paises');
     const dispEl = document.getElementById('est-dispositivos');
     try {
@@ -38,15 +28,14 @@ window.renderEstadisticas = async function () {
         const asof = document.getElementById('est-asof');
         if (asof) asof.textContent = j.as_of || '—';
 
-        // Tarjetas resumen (conexiones + únicos/pico) para los 4 períodos
+        // En línea ahora (en vivo, no depende del período)
+        estSetText('est-kpi-online', estFmt(j.online));
+
+        // Tarjetas resumen: contador de CONEXIONES para los 4 períodos
         for (const key of ['hoy', 'ayer', 'semana', 'mes']) {
             const p = j.periodos && j.periodos[key];
             const nEl = document.getElementById('est-n-' + key);
-            const uEl = document.getElementById('est-u-' + key);
-            if (p) {
-                if (nEl) nEl.textContent = estFmt(p.total);
-                if (uEl) uEl.textContent = estFmt(p.unicos) + ' únicos · pico ' + estFmt(p.pico);
-            }
+            if (p && nEl) nEl.textContent = estFmt(p.total);
         }
 
         // Activar el último período y pintar el desglose
@@ -66,6 +55,28 @@ function estSetText(id, txt) {
     if (el) el.textContent = txt;
 }
 
+// --- ESTADÍSTICAS DEL PLAYER (visitas a la página pública / reproductor) ---
+window.renderPageStats = async function () {
+    const root = document.getElementById('pst-kpi-online');
+    if (!root) return;
+    try {
+        const res = await fetch(`autodj_api.php?action=get_page_stats&_t=${Date.now()}`);
+        const j = await res.json();
+        if (!j || !j.success) return;
+        const asof = document.getElementById('pst-asof');
+        if (asof) asof.textContent = j.as_of || '—';
+
+        estSetText('pst-kpi-online', estFmt(j.online));
+
+        for (const key of ['hoy', 'ayer', 'semana', 'mes']) {
+            const p = j.periodos && j.periodos[key];
+            if (!p) continue;
+            estSetText('pst-n-' + key, estFmt(p.total));
+            estSetText('pst-u-' + key, estFmt(p.unicos) + ' únicos');
+        }
+    } catch (e) { /* el stream sigue mostrándose aunque fallen las del player */ }
+};
+
 function drawEstBreakdown(period) {
     const data = window.__estData;
     const paisesEl = document.getElementById('est-paises');
@@ -73,12 +84,8 @@ function drawEstBreakdown(period) {
     if (!data || !data.periodos || !data.periodos[period]) return;
     const p = data.periodos[period];
 
-    // KPIs del período activo
+    // Etiqueta del período activo
     estSetText('est-kpi-period', '(' + (EST_PERIOD_LBL[period] || '') + ')');
-    estSetText('est-kpi-pico', estFmt(p.pico));
-    estSetText('est-kpi-dur', estFmtDur(p.dur_total));
-    estSetText('est-kpi-media', estFmtDur(p.dur_media));
-    estSetText('est-kpi-unicos', estFmt(p.unicos));
 
     if (!paisesEl || !dispEl) return;
     if (!p.total) {
@@ -99,7 +106,7 @@ function drawEstBreakdown(period) {
         bar.innerHTML = `
             <div class="est-row-head">
                 <div class="est-row-name"><span style="color:#64748b; min-width:14px;">${i + 1}</span>${row.nombre}<span class="cc">${row.cc}</span></div>
-                <div class="est-row-nums">${estFmt(row.c)} <small>conexiones · ${estFmt(row.u)} únicos</small></div>
+                <div class="est-row-nums">${estFmt(row.c)} <small>conexiones</small></div>
             </div>
             <div class="est-bar"><i style="width:${Math.max(2, Math.round((row.c / maxP) * 100))}%"></i></div>`;
         paisesEl.appendChild(bar);
@@ -123,7 +130,7 @@ function drawEstBreakdown(period) {
         bar.innerHTML = `
             <div class="est-row-head">
                 <div class="est-row-name"><span style="font-size:1rem;">${icon}</span>${row.nombre}</div>
-                <div class="est-row-nums">${estFmt(row.c)} <small>conexiones · ${estFmt(row.u)} únicos</small></div>
+                <div class="est-row-nums">${estFmt(row.c)} <small>conexiones</small></div>
             </div>
             <div class="est-bar"><i style="width:${Math.max(2, Math.round((row.c / maxD) * 100))}%"></i></div>`;
         dispEl.appendChild(bar);

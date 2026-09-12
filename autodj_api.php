@@ -10,7 +10,7 @@ require_once __DIR__ . '/config.php';
 //    consultan carátula / historial sin credenciales. Permitirlos SIEMPRE.
 // =============================================================
 $action = strtolower(trim((string)($_REQUEST['action'] ?? ($_POST['action'] ?? ($_GET['action'] ?? '')))));
-$public_actions = ['get_now_playing', 'serve_default_cover', 'serve_cached_cover', 'serve_page_logo', 'serve_page_bg', 'serve_staff_photo', 'get_page_config', 'stats'];
+$public_actions = ['get_now_playing', 'serve_default_cover', 'serve_cached_cover', 'serve_page_logo', 'serve_page_bg', 'serve_staff_photo', 'get_page_config', 'stats', 'page_ping'];
 $force_public_ok = in_array($action, $public_actions, true);
 
 // =============================================================
@@ -2259,6 +2259,34 @@ if ($action === 'get_listener_stats') {
         ['success' => true, 'ingested' => $st_ing],
         est_periods_payload($mount)
     ), JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'get_page_stats') {
+    // Estadísticas del PLAYER / página pública (visitas, únicos y en línea ahora).
+    require_once __DIR__ . '/estadisticas_page_lib.php';
+    if (!function_exists('esp_periods_payload')) {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['success' => false, 'error' => 'Librería de estadísticas de página no disponible']);
+        exit;
+    }
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(array_merge(
+        ['success' => true],
+        esp_periods_payload($mount)
+    ), JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($action === 'page_ping') {
+    // Latido público desde radio_page.php: marca al visitante como "en línea ahora".
+    require_once __DIR__ . '/estadisticas_page_lib.php';
+    $sid = preg_replace('/[^a-zA-Z0-9_-]/', '', (string)($_REQUEST['sid'] ?? ''));
+    if (strlen($sid) > 64) $sid = substr($sid, 0, 64);
+    if ($sid === '') $sid = substr(sha1(esp_client_ip() . '|' . ($_SERVER['HTTP_USER_AGENT'] ?? '')), 0, 16);
+    esp_touch_presence($mount, $sid);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['ok' => true, 'online' => esp_online($mount)], JSON_UNESCAPED_UNICODE);
     exit;
 }
 

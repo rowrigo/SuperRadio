@@ -74,7 +74,7 @@ function vl_fmt_time($_ts) {
             </div>
             <small id="live-song-time" style="color:var(--text-muted); font-family:monospace; font-size:0.85rem;">Inició: --:--:--</small>
         </div>
-        <audio id="live-audio-player" controls style="width:100%; border-radius:30px; height:42px; outline:none;" src="<?= htmlspecialchars($_stream_url) ?>"></audio>
+        <audio id="live-audio-player" preload="none" controls style="width:100%; border-radius:30px; height:42px; outline:none;" src="<?= htmlspecialchars($_stream_url) ?>"></audio>
     </div>
 
     <!-- WIDGET ESPACIO EN DISCO (SOLO Modo AUTODJ) -->
@@ -98,7 +98,7 @@ function vl_fmt_time($_ts) {
             </div>
             <small id="live-song-time" style="color:var(--text-muted); font-family:monospace; font-size:0.85rem;">—</small>
         </div>
-        <audio id="live-audio-player" controls style="width:100%; border-radius:30px; height:42px; outline:none;" src="<?= htmlspecialchars($_stream_url) ?>"></audio>
+        <audio id="live-audio-player" preload="none" controls style="width:100%; border-radius:30px; height:42px; outline:none;" src="<?= htmlspecialchars($_stream_url) ?>"></audio>
     </div>
 
 <?php endif; ?>

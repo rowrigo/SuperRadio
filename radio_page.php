@@ -67,6 +67,16 @@ if (!is_dir($base_dir)) { @mkdir($base_dir, 0775, true); }
 $ns_state_dir = rtrim($base_dir, '/') . '/.nextsong_state';
 if (!is_dir($ns_state_dir)) { @mkdir($ns_state_dir, 0775, true); }
 
+// ==== Estadísticas del PLAYER: registrar la VISITA a la página pública ====
+// Cada carga real (GET, humanos) suma una visita. Los bots (WhatsApp/Telegram,
+// curl, monitores…) se descartan. El "en línea ahora" llega luego por latido (page_ping).
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET' && empty($_GET['norecord'])) {
+    require_once __DIR__ . '/estadisticas_page_lib.php';
+    if (!est_is_bot_ua((string)($_SERVER['HTTP_USER_AGENT'] ?? ''))) {
+        esp_record_visit($mount, esp_client_ip());
+    }
+}
+
 // === Helpers config página ===============
 function rp_pg_default_config() {
     return [
@@ -1891,6 +1901,30 @@ a.c-value:hover { color: <?= htmlspecialchars($accent) ?>; }
     setTimeout(updateMetadata, 300);
     setInterval(updateMetadata, REFRESH_INTERVAL_MS);
 
+})();
+</script>
+
+<!-- 📊 Estadísticas del PLAYER: latido de presencia ("en línea ahora") -->
+<script>
+(function () {
+    try {
+        var KEY = 'sr_player_sid';
+        var sid = null;
+        try { sid = localStorage.getItem(KEY); } catch (e) {}
+        if (!sid) {
+            sid = Math.random().toString(36).slice(2) + Date.now().toString(36);
+            try { localStorage.setItem(KEY, sid); } catch (e) {}
+        }
+        var url = <?= json_encode(rp_abs_url('autodj_api.php?action=page_ping&mount=' . rawurlencode($mount)), JSON_UNESCAPED_UNICODE) ?>;
+        function ping() {
+            try {
+                fetch(url + '&sid=' + encodeURIComponent(sid), { cache: 'no-store', keepalive: true }).catch(function () {});
+            } catch (e) {}
+        }
+        ping();
+        setInterval(ping, 45000);
+        document.addEventListener('visibilitychange', function () { if (!document.hidden) ping(); });
+    } catch (e) {}
 })();
 </script>
 </body>

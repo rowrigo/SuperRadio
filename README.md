@@ -14,10 +14,10 @@ sin framework ni base de datos externa (los datos viven en `database.json`).
   (`superradio.php`). La primera visita crea el superadmin (estilo AzureCast).
 - Correo SMTP configurable desde el panel (recordatorios de pago, avisos) y
   datos del negocio en "Mi Cuenta".
-- **Estadísticas del stream** por emisora (en la cabina): conexiones al enlace
-  de audio, país de origen, duración y pico de oyentes simultáneos. Cuenta a
-  quien escucha desde el reproductor propio, desde otro reproductor o por la IP,
-  sin guardar direcciones IP.
+- **Estadísticas del stream** por emisora (en la cabina): contador de conexiones
+  al enlace de audio, país de origen y oyentes en línea. Cuenta a quien escucha
+  desde el reproductor propio, desde otro reproductor o por la IP, sin guardar
+  direcciones IP.
 
 ## Requisitos
 

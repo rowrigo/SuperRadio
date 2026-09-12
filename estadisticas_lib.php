@@ -1,6 +1,6 @@
 <?php
 /**
- * Estadísticas de audiencia del STREAM por radio (conexiones / países / duración / pico).
+ * Estadísticas de audiencia del STREAM por radio (conexiones / países / en línea).
  *
  * Qué se cuenta: cada CONEXIÓN al stream (mount de Icecast), venga del reproductor
  * propio, de otro reproductor, de un dominio o directa a la IP:8000.
@@ -14,12 +14,12 @@
  *     coincide al segundo porque ambos registran el momento de inicio de la sesión.
  *
  * Almacenamiento (FUERA del webroot, /var/media/radios/_listener_stats):
- *   daily/YYYY-MM-DD.json  -> { "<mount>": [ {ts,dur,cc,h,dv} ... ] }
+ *   daily/YYYY-MM-DD.json  -> { "<mount>": [ {ts,cc,dv,h,dur} ... ] }
  *        ts  = inicio de la conexión (unix)
- *        dur = segundos conectado (0 = desconocida)
  *        cc  = país ISO-2 (-- local, ?? desconocido)
- *        h   = hash de la IP (sin IP cruda) para contar oyentes únicos
  *        dv  = tipo de dispositivo (0 móvil, 1 tablet, 2 escritorio, 3 reproductor, 4 otro)
+ *        h   = hash de la IP (sin IP cruda); reservado (la vista no cuenta "únicos")
+ *        dur = segundos conectado; se registra aunque la vista no lo muestre
  *   geo_cache.json         -> { sha1(IP): {cc, t} }
  *   state.json             -> cursores/tails por log + índice de IPs del proxy
  *   ingest.lock            -> exclusión mutua del ingest
@@ -432,52 +432,41 @@ function est_ingest_run($rebuild = false) {
     }
 }
 
-/** Pico de conexiones simultáneas a partir de intervalos [inicio, duración]. */
-function est_peak_concurrent(array $intervals) {
-    $pts = [];
-    foreach ($intervals as $iv) {
-        $s = (int)($iv[0] ?? 0);
-        if ($s <= 0) continue;
-        $d = (int)($iv[1] ?? 0);
-        $e = $s + ($d > 0 ? $d : 1);
-        $pts[] = [$s, 1];
-        $pts[] = [$e, -1];
+/** Oyentes conectados AHORA MISMO (en vivo) según Icecast. 0 si no responde. */
+function est_live_listeners($mount) {
+    $mount = strtolower(trim((string)$mount, '/'));
+    if ($mount === '') return 0;
+    $ctx = stream_context_create(['http' => ['timeout' => 2, 'ignore_errors' => true]]);
+    $raw = @file_get_contents('http://127.0.0.1:8000/status-json.xsl', false, $ctx);
+    if (!$raw) return 0;
+    $j = json_decode($raw, true);
+    $src = $j['icestats']['source'] ?? null;
+    if (!is_array($src)) return 0;
+    if (isset($src['listenurl'])) $src = [$src]; // una sola radio -> viene como objeto
+    foreach ($src as $s) {
+        $u = (string)($s['listenurl'] ?? '');
+        $m = strtolower(trim((string)parse_url($u, PHP_URL_PATH), '/'));
+        if ($m === $mount) return (int)($s['listeners'] ?? 0);
     }
-    if (!$pts) return 0;
-    usort($pts, fn($a, $b) => $a[0] === $b[0] ? ($a[1] - $b[1]) : ($a[0] - $b[0]));
-    $cur = 0; $peak = 0;
-    foreach ($pts as $p) { $cur += $p[1]; if ($cur > $peak) $peak = $cur; }
-    return $peak;
+    return 0;
 }
 
 /** Suma un rango de días para un mount. $days = lista de 'Y-m-d' (en tz de la radio). */
 function est_sum_days($mount, $days) {
-    $agg = ['total' => 0, 'uniques' => [], 'countries' => [], 'devices' => [], 'dur_total' => 0, 'intervals' => []];
+    $agg = ['total' => 0, 'countries' => [], 'devices' => []];
     foreach ($days as $day) {
         $f = est_day_path($day);
         if (!is_file($f)) continue;
         $j = est_read_json($f, []);
         if (empty($j[$mount]) || !is_array($j[$mount])) continue;
         foreach ($j[$mount] as $ev) {
-            $h  = (string)($ev['h'] ?? '');
-            if ($h === '') continue;
             $cc = (string)($ev['cc'] ?? '??');
             $dv = (int)($ev['dv'] ?? 4);
-            $dur = (int)($ev['dur'] ?? 0);
-            $ts  = (int)($ev['ts'] ?? 0);
             $agg['total']++;
-            $agg['dur_total'] += $dur;
-            $agg['uniques'][$h] = true;
-            if (!isset($agg['countries'][$cc])) $agg['countries'][$cc] = ['c' => 0, 'u' => []];
-            $agg['countries'][$cc]['c']++;
-            $agg['countries'][$cc]['u'][$h] = true;
-            if (!isset($agg['devices'][$dv])) $agg['devices'][$dv] = ['c' => 0, 'u' => []];
-            $agg['devices'][$dv]['c']++;
-            $agg['devices'][$dv]['u'][$h] = true;
-            $agg['intervals'][] = [$ts, $dur];
+            $agg['countries'][$cc] = ($agg['countries'][$cc] ?? 0) + 1;
+            $agg['devices'][$dv] = ($agg['devices'][$dv] ?? 0) + 1;
         }
     }
-    $agg['pico'] = est_peak_concurrent($agg['intervals']);
     return $agg;
 }
 
@@ -498,22 +487,18 @@ function est_periods_payload($mount) {
     $build = function ($days) use ($mount) {
         $a = est_sum_days($mount, $days);
         $paises = [];
-        foreach ($a['countries'] as $cc => $v) {
-            $paises[] = ['cc' => $cc, 'nombre' => est_country_es($cc), 'c' => $v['c'], 'u' => count($v['u'])];
+        foreach ($a['countries'] as $cc => $c) {
+            $paises[] = ['cc' => $cc, 'nombre' => est_country_es($cc), 'c' => $c];
         }
         usort($paises, fn($x, $y) => $y['c'] <=> $x['c']);
         $labels = [0 => 'Móvil', 1 => 'Tablet', 2 => 'Escritorio', 3 => 'Aplicación / Reproductor', 4 => 'Otro'];
         $dispositivos = [];
-        foreach ($a['devices'] as $dv => $v) {
-            $dispositivos[] = ['dv' => $dv, 'nombre' => $labels[$dv] ?? 'Otro', 'c' => $v['c'], 'u' => count($v['u'])];
+        foreach ($a['devices'] as $dv => $c) {
+            $dispositivos[] = ['dv' => $dv, 'nombre' => $labels[$dv] ?? 'Otro', 'c' => $c];
         }
         usort($dispositivos, fn($x, $y) => $y['c'] <=> $x['c']);
         return [
             'total'         => $a['total'],
-            'unicos'        => count($a['uniques']),
-            'pico'          => $a['pico'],
-            'dur_total'     => $a['dur_total'],
-            'dur_media'     => $a['total'] > 0 ? (int)round($a['dur_total'] / $a['total']) : 0,
             'paises'        => $paises,
             'dispositivos'  => $dispositivos,
         ];
@@ -521,8 +506,9 @@ function est_periods_payload($mount) {
 
     $yesterday = (clone $now)->modify('-1 day')->format('Y-m-d');
     return [
-        'mount' => $mount,
-        'as_of' => $now->format('Y-m-d H:i:s'),
+        'mount'  => $mount,
+        'as_of'  => $now->format('Y-m-d H:i:s'),
+        'online' => est_live_listeners($mount),
         'periodos' => [
             'hoy'    => $build([$today]),
             'ayer'   => $build([$yesterday]),
