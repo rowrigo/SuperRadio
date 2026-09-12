@@ -83,7 +83,7 @@ function renderStorageWidget(storage, rootId) {
                 </div>
                 <div style="background:#060b17; padding:10px 12px; border-radius:6px; border:1px solid #1e293b;">
                     <small style="color:#94a3b8; font-size:0.7rem; font-weight:bold; display:block;">LIBRE</small>
-                    <strong style="color:#4ade80; font-size:1.05rem; font-family:monospace;">${storage.free_h || '0 B'}</strong>
+                    <strong style="color:#4ade80; font-size:1.05rem; font-family:monospace;">${unlimited ? '∞' : (storage.free_h || '0 B')}</strong>
                 </div>
                 <div style="background:#060b17; padding:10px 12px; border-radius:6px; border:1px solid #1e293b;">
                     <small style="color:#94a3b8; font-size:0.7rem; font-weight:bold; display:block;">PORCENTAJE</small>
@@ -94,8 +94,7 @@ function renderStorageWidget(storage, rootId) {
                 <div style="width:${pctStr}; height:100%; background:${barColor}; transition:width 0.5s ease;"></div>
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.75rem; color:#94a3b8; flex-wrap:wrap; gap:6px;">
-                ${unlimited ? `<span>Cuota: <strong style="color:#38bdf8;">∞ Ilimitado</strong> (según disco físico del servidor)</span>` : `<span>Límite: <strong style="color:#cbd5e1;">${storage.quota_h}</strong>. Si necesitas más espacio, contacta con el administrador.</span>`}
-                ${(storage.disk_total_h && storage.disk_free_h) ? `<span>Disco servidor: <strong>${storage.disk_total_h}</strong> · Libre: <strong style="color:#4ade80;">${storage.disk_free_h}</strong></span>` : ''}
+                ${unlimited ? `<span>Cuota: <strong style="color:#38bdf8;">∞ Ilimitado</strong></span>` : `<span>Límite: <strong style="color:#cbd5e1;">${storage.quota_h}</strong>. Si necesitas más espacio, contacta con el administrador.</span>`}
             </div>`;
             root.innerHTML = filas;
         } else {
@@ -104,7 +103,7 @@ function renderStorageWidget(storage, rootId) {
             <strong style="color:#f1f5f9;">${storage.used_h || '0 B'}</strong>
             <span style="color:#64748b; margin:0 4px;">/</span>
             <strong style="color:${unlimited ? '#38bdf8' : '#f1f5f9'};">${storage.quota_h || '∞'}</strong>
-            <span style="color:#94a3b8; margin-left:10px;">(libre: <span style="color:#4ade80;">${storage.free_h || '0 B'}</span> · <span style="font-weight:bold;">${pctStr}</span> usado)</span>
+            <span style="color:#94a3b8; margin-left:10px;">(libre: <span style="color:#4ade80;">${unlimited ? '∞' : (storage.free_h || '0 B')}</span> · <span style="font-weight:bold;">${pctStr}</span> usado)</span>
             `;
             const summaryEl = document.getElementById(rootId + '-summary');
             const barEl = document.getElementById(rootId + '-bar');

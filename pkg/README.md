@@ -7,14 +7,21 @@ usar en ese VPS.
 
 ## 1) Generar el paquete (en este VPS / repo)
 
+`pkg/` vive **dentro del repo**. El script monta un staging (código + `pkg/`) y
+empaqueta desde ahí, excluyendo secretos y el home de `www-data`:
+
 ```bash
-bash pkg/make_package.sh 20260904      # → superradio-package-20260904.tar.gz
+cd /var/www/radiopanel
+bash pkg/make_package.sh 20260912      # → superradio-package-20260912.tar.gz
 ```
+
+> Alternativa más directa para un VPS nuevo: en vez del `.tar.gz`, clona el
+> repo y ejecuta el instalador desde el clon (ver el `README.md` de la raíz).
 
 Sube el `.tar.gz` al VPS nuevo y extráelo:
 
 ```bash
-tar -xzf superradio-package-20260904.tar.gz
+tar -xzf superradio-package-20260912.tar.gz
 ```
 
 ## 2) Instalar en el VPS nuevo (Ubuntu 22.04)
@@ -43,7 +50,13 @@ El instalador:
    `database.json` limpio. Sin flags de admin queda **sin superadmin**
    (el alta ocurre en el primer acceso web); con `--admin-user` /
    `--admin-pass` lo deja pre-creado. Luego arranca los servicios.
-5. Emite el certificado **Let's Encrypt** para tu dominio (`certbot --nginx --redirect`).
+5. Instala el **servicio systemd del AutoDJ**: unidad template
+   `radiopanel-autodj@<mount>` con `Restart=always`, regla **polkit** para que
+   `www-data` la gestione sin contraseña, y **watchdog** cada 2 min
+   (`radiopanel-autodj-watchdog.timer`) que la arranca tras un reboot o si se
+   cae. Liquidsoap queda **fuera del cgroup de php-fpm**, así un
+   reinicio/actualización de php-fpm ya no tumba los streams.
+6. Emite el certificado **Let's Encrypt** para tu dominio (`certbot --nginx --redirect`).
 
 Flags útiles: `--no-ssl` (deja HTTP para probar antes del DNS),
 `--no-restart`, `--php-version=8.1`, `--src=...`.
@@ -62,8 +75,8 @@ Flags útiles: `--no-ssl` (deja HTTP para probar antes del DNS),
    `/superradio.php` sin sesión redirige a esa página.
 3. Dentro del panel, **👤 Mi Cuenta** permite cambiar el usuario o la contraseña
    del superadmin cuando quieras (pide la contraseña actual).
-4. Crea una radio (mount) → el instalador arranca Liquidsoap; el stream queda en
-   `https://dominio/<mount>`.
+4. Crea una radio (mount) → el panel la arranca como unidad systemd
+   (`radiopanel-autodj@<mount>`); el stream queda en `https://dominio/<mount>`.
 5. Sube música desde el panel (Musicateca) y personaliza el player (Página Pública).
 6. Firewall del VPS: abre 80, 443, 8000 y el rango de puertos DJ (8005+).
 
@@ -72,25 +85,6 @@ Flags útiles: `--no-ssl` (deja HTTP para probar antes del DNS),
 El proyecto usa `deploy_update.php` (paquete `.sck`) para actualizar sólo el
 código. `database.json` y `config.local.php` están protegidos (no se pisan).
 El token de deploy es el `DEPLOY_TOKEN` de `config.local.php` de cada VPS.
-
-## 5) Publicar una Release nueva (GitHub)
-
-Una Release = tag (p. ej. `v1.1`) + paquete `.tar.gz` descargable. Flujo:
-
-1. Sube a `main` el código que quieras distribuir (commit + push a
-   `rowrigo/SuperRadio`).
-2. En el clon de publicación (`/root/superradio-src`), ya sincronizado y limpio,
-   ejecuta el script de release (te pedirá tu token GitHub, scope `repo`):
-
-   ```bash
-   cd /root/superradio-src
-   bash pkg/release.sh v1.1
-   ```
-
-`pkg/release.sh` verifica que el clon esté limpio y al día con `origin/main`,
-genera el paquete (`bash pkg/make_package.sh <fecha>`), comprueba que **no**
-lleve `database.json` ni `config.local.php`, crea el tag/Release sobre `main`
-y sube el paquete como asset. Al final imprime la URL de descarga y el sha256.
 
 ## Notas / riesgos
 

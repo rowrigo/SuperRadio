@@ -7,7 +7,6 @@ window.appData = window.appData || {
     playlists: { general: { tipo: 'carpetas', items: [] } }, 
     schedule: [], 
     ads: [],
-    time_voice: { enabled: false, folder: '' },
     intercalators: [],
     running: false,
     icecast: { online: false, listeners: 0 }
@@ -33,6 +32,7 @@ window.switchView = window.switchView || function switchView(viewId, btn) {
     if (viewId === 'view-reloj' && typeof renderScheduleView === 'function') renderScheduleView();
     if (viewId === 'view-anuncios' && typeof renderAdsView === 'function') renderAdsView();
     if (viewId === 'view-ajustes' && typeof populateAjustesUI === 'function') populateAjustesUI();
+    if (viewId === 'view-estadisticas' && typeof renderEstadisticas === 'function') renderEstadisticas();
     if (viewId === 'view-musicateca') { 
         if (typeof renderMusicateca === 'function') renderMusicateca();
         if (typeof __renderStorageAllWidgets === 'function') __renderStorageAllWidgets();
@@ -71,8 +71,9 @@ async function persistToServer(showAlert = false) {
                 playlists: appData.playlists, 
                 schedule: appData.schedule,
                 ads: appData.ads || [],
-                time_voice: appData.time_voice || { enabled: false, folder: '' },
-                intercalators: Array.isArray(appData.intercalators) ? appData.intercalators : []
+                ...(Array.isArray(appData.hide_title_folders) ? { hide_title_folders: appData.hide_title_folders } : {}),
+                intercalators: Array.isArray(appData.intercalators) ? appData.intercalators : [],
+                crossfade: appData.crossfade || { fade_in: 0, fade_out: 0 }
             })
         });
         const json = await res.json();
@@ -95,8 +96,11 @@ async function loadData() {
         appData.ads = (json.data && json.data.ads) ? json.data.ads : [];
         appData.timezone = (json.data && json.data.timezone) ? json.data.timezone : 'America/Costa_Rica';
         appData.default_playlist = (json.data && json.data.default_playlist) ? json.data.default_playlist : 'general';
-        appData.time_voice = (json.data && json.data.time_voice) ? json.data.time_voice : { enabled: false, folder: '' };
+        appData.crossfade = (json.data && json.data.crossfade && typeof json.data.crossfade === 'object')
+            ? json.data.crossfade
+            : { fade_in: 0, fade_out: 0 };
         appData.intercalators = (json.data && Array.isArray(json.data.intercalators)) ? json.data.intercalators : [];
+        appData.hide_title_folders = (json.data && Array.isArray(json.data.hide_title_folders)) ? json.data.hide_title_folders : [];
         appData.running = !!(json.running || false);
         appData.icecast = (json.icecast && typeof json.icecast === 'object') ? json.icecast : { online: false, listeners: 0 };
         appData.storage = (json.storage && typeof json.storage === 'object') ? json.storage : null;

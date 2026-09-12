@@ -35,6 +35,9 @@
     <button class="nav-item" onclick="switchView('view-public-page', this)">
         <span class="icon">🌐</span> Página Pública
     </button>
+    <button class="nav-item" onclick="switchView('view-estadisticas', this)">
+        <span class="icon">📊</span> Estadísticas
+    </button>
 <?php if ($_es_modo_autodj): ?>
     <button class="nav-item" onclick="switchView('view-ajustes', this)">
         <span class="icon">⚙️</span> Ajustes AutoDJ

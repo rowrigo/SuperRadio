@@ -1,0 +1,7 @@
+[Unit]
+Description=Watchdog del AutoDJ de SuperRadio
+After=network-online.target icecast2.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/radiopanel-autodj-watchdog.sh

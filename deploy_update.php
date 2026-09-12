@@ -3,18 +3,19 @@ header('Content-Type: application/json; charset=utf-8');
 
 // ============================================================
 // TOKEN DE DEPLOY
-// Default = valor histórico de config.php. Si existe
-// config.local.php (creado por pkg/install.sh por VPS) se usa
-// el DEPLOY_TOKEN propio de ese VPS.
+// Lo provee config.local.php (creado por pkg/install.sh, único por VPS).
+// Sin config.local.php NO hay token válido: el deploy queda deshabilitado.
+// (Antes había un token por defecto que era público en el repo → agujero.)
 // ============================================================
-$DEPLOY_TOKEN = 'scr_deploy_ca601bb45bf46e6cfd46';
+$DEPLOY_TOKEN = '';
 if (is_file(__DIR__ . '/config.local.php')) {
     include __DIR__ . '/config.local.php';
-    if (defined('DEPLOY_TOKEN') && DEPLOY_TOKEN !== '') $DEPLOY_TOKEN = DEPLOY_TOKEN;
+    if (defined('DEPLOY_TOKEN') && is_string(DEPLOY_TOKEN)) $DEPLOY_TOKEN = DEPLOY_TOKEN;
 }
 // ============================================================
 
-if (($_POST['token'] ?? '') !== $DEPLOY_TOKEN) {
+$DEPLOY_SENT = is_string($_POST['token'] ?? null) ? $_POST['token'] : '';
+if ($DEPLOY_TOKEN === '' || !hash_equals($DEPLOY_TOKEN, $DEPLOY_SENT)) {
     http_response_code(403);
     echo json_encode(['success' => false, 'error' => 'Token inválido'], JSON_UNESCAPED_UNICODE);
     exit;

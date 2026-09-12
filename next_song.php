@@ -2,6 +2,10 @@
 define('ROOT_RADIOPANEL', __DIR__);
 require_once ROOT_RADIOPANEL . '/config.php';
 
+// Item especial de playlist: "HORA" (hora hablada en vivo). Se guarda como este
+// string dentro de playlists.<nombre>.items y next_song.php lo resuelve a un MP3.
+if (!defined('NS_HORA_TOKEN')) define('NS_HORA_TOKEN', '@HORA@');
+
 if (PHP_SAPI !== 'cli') {
     header('Content-Type: text/plain; charset=utf-8');
 }
@@ -47,7 +51,7 @@ $default_data = [
     'playlists'        => [],
     'schedule'         => [],
     'ads'              => [],
-    'time_voice'       => ['enabled' => false, 'folder' => ''],
+    'hora_folder'      => 'HORAS',
 ];
 $app_data = file_exists($data_file) ? (json_decode(@file_get_contents($data_file), true) ?: $default_data) : $default_data;
 $app_data = array_replace_recursive($default_data, $app_data);
@@ -80,10 +84,26 @@ $NS_DEFAULT_COVER   = "{$NS_STATE_DIR}/default_cover.jpg";
 
 // ---------- HELPERS METADATOS (ID3v2 puro PHP + iTunes API + fallback filename) ----------
 
+// Entero "synchsafe" de ID3v2: cada byte usa solo 7 bits. El tamaño del header
+// ID3v2 SIEMPRE es synchsafe; en ID3v2.4 los tamaños de frame también.
+// (unpack('C*') devuelve claves 1..N; array_values() las reindexa a 0..N-1.)
 function ns_unpack_syncint($raw4) {
-    $b = array_values(unpack('C*', $raw4));
+    $b = array_values(unpack('C*', (string)$raw4));
     if (count($b) < 4) return 0;
-    return ($b[1] << 21) | ($b[2] << 14) | ($b[3] << 7) | $b[4];
+    return (($b[0] & 0x7F) << 21) | (($b[1] & 0x7F) << 14) | (($b[2] & 0x7F) << 7) | ($b[3] & 0x7F);
+}
+
+// Entero big-endian de 32 bits sin signo (tamaños de frame en ID3v2.2/v2.3).
+function ns_unpack_int32($raw4) {
+    $b = array_values(unpack('C*', (string)$raw4));
+    if (count($b) < 4) return 0;
+    return ($b[0] << 24) | ($b[1] << 16) | ($b[2] << 8) | $b[3];
+}
+
+// Tamaño de un campo de 4 bytes según la versión de ID3v2:
+//   v2.4 -> synchsafe    v2.2/v2.3 -> big-endian normal
+function ns_unpack_frame_size($raw4, $major) {
+    return ((int)$major === 4) ? ns_unpack_syncint($raw4) : ns_unpack_int32($raw4);
 }
 
 function ns_iconv($s, $fromEnc, $toEnc = 'UTF-8') {
@@ -184,14 +204,14 @@ function ns_read_id3v2(string $mp3, string $cover_dir, string $cover_name): arra
         if ($id === false || trim($id) === '') break;
         $frameLen = 0;
         if ($major === 2) { $frameLen = (ord($tags[$p+3]) << 16) | (ord($tags[$p+4]) << 8) | ord($tags[$p+5]); }
-        else { $frameLen = ns_unpack_syncint_32(substr($tags, $p + 4, 4)); }
+        else { $frameLen = ns_unpack_frame_size(substr($tags, $p + 4, 4), $major); }
         if ($frameLen <= 0) { $p += $framePrefixLen; continue; }
         if ($p + $framePrefixLen + $frameLen > $len) break;
         $flags = $major === 2 ? 0 : unpack('n', substr($tags, $p + 8, 2))[1];
         $compressed = ($major !== 2) && (($flags & 0x0080) !== 0);
         $data = substr($tags, $p + $framePrefixLen, $frameLen);
         if ($compressed) {
-            $realLen = ns_unpack_syncint_32(substr($data, 0, 4));
+            $realLen = ns_unpack_frame_size(substr($data, 0, 4), $major);
             $data = substr($data, 4);
             if (function_exists('zlib_uncompress')) { $u = @zlib_uncompress($data, $realLen > 0 ? $realLen : null); if ($u !== false) $data = $u; }
         }
@@ -223,14 +243,6 @@ function ns_read_id3v2(string $mp3, string $cover_dir, string $cover_name): arra
         if ($wrote !== false) { $out['cover'] = basename($coverFile); $out['has_cover'] = true; }
     }
     return $out;
-}
-function ns_unpack_syncint_32($raw4) {
-    $b = array_values(unpack('C*', $raw4));
-    if (count($b) < 4) return 0;
-    if (($b[1] & 0x80) === 0) {
-        return ($b[1] << 24) | ($b[2] << 16) | ($b[3] << 8) | $b[4];
-    }
-    return ($b[1] << 21) | ($b[2] << 14) | ($b[3] << 7) | $b[4];
 }
 function ns_extract_text($data, $major) {
     if ($data === '' || $data === false) return null;
@@ -455,7 +467,9 @@ function ns_metadata_fallback_chain($fullpath, $mount, $base_dir, $NS_ID3_CACHE_
     $cached = null;
     if (is_file($cache_file) && (time() - @filemtime($cache_file)) < 86400 * 30) {
         $j = @json_decode(@file_get_contents($cache_file), true);
-        if (is_array($j)) { $cached = $j; $usedCached = true; }
+        // 'v' = versión del parser ID3. Los cachés sin la versión actual se
+        // re-parsean UNA vez (fix de ns_unpack_syncint / tamaños de frame v2.4).
+        if (is_array($j) && (int)($j['v'] ?? 0) >= 2) { $cached = $j; $usedCached = true; }
     }
     $final = null;
     if (!$isSilence && is_file($abs)) {
@@ -498,6 +512,7 @@ function ns_metadata_fallback_chain($fullpath, $mount, $base_dir, $NS_ID3_CACHE_
                 }
             }
             $final = [
+                'v'           => 2,   // versión del parser ID3 (ver lectura de caché)
                 'title'       => $titleCandidate  !== '' ? $titleCandidate  : basename($abs),
                 'artist'      => $artistCandidate !== '' ? $artistCandidate : '',
                 'album'       => $albumCandidate,
@@ -630,6 +645,164 @@ function ns_load_files_for_playlist($app_data, $pl_name, $base_dir) {
     return ns_expand_files($base_dir, $items, $tipo);
 }
 
+/**
+ * Carpetas con el NOMBRE OCULTO en el reproductor (config `hide_title_folders`):
+ * para esas pistas, en vez del nombre del archivo se manda el nombre de la
+ * emisora. Devuelve los fragmentos de ruta a buscar dentro de la ruta completa
+ * (el .liq hace exactamente lo mismo, con la misma lista).
+ * El item @HORA@ se materializa en <estado>/hora_cache/, así que si se oculta
+ * la carpeta de locuciones su anuncio queda oculto también.
+ */
+function ns_title_hide_fragments($app_data) {
+    $frags   = [];
+    $folders = (is_array($app_data) && is_array($app_data['hide_title_folders'] ?? null)) ? $app_data['hide_title_folders'] : [];
+    foreach ($folders as $f) {
+        if (!is_string($f)) continue;
+        $f = trim($f);
+        if ($f === '' || strpos($f, '/') !== false) continue;
+        $frags['/' . $f . '/'] = true;
+    }
+    $voice = is_array($app_data) ? trim((string)($app_data['hora_folder'] ?? '')) : '';
+    if ($voice === '') $voice = 'HORAS';
+    foreach (array_keys($frags) as $frag) {
+        if (strcasecmp(trim($frag, '/'), $voice) === 0) { $frags['/hora_cache/'] = true; break; }
+    }
+    return array_keys($frags);
+}
+
+function ns_title_is_hidden($path, $app_data) {
+    if (!is_string($path) || $path === '') return false;
+    foreach (ns_title_hide_fragments($app_data) as $frag) {
+        if (strpos($path, $frag) !== false) return true;
+    }
+    return false;
+}
+
+/**
+ * Retardo del PREFETCH de Liquidsoap (prefetch=1 en el .liq): el siguiente
+ * request se pide al EMPEZAR la pista en curso, así que el clip que estamos
+ * resolviendo saldrá al aire cuando esa pista termine, no ahora. Devuelve la
+ * duración de lo que está sonando (0 si no se puede estimar → sin compensar).
+ */
+function ns_hora_prefetch_delay($base_dir, $state_dir) {
+    $cur_file = rtrim($state_dir, '/') . '/current_song.json';
+    if (!is_file($cur_file)) return 0;
+    $cur  = json_decode((string)@file_get_contents($cur_file), true);
+    $path = is_array($cur) ? (string)($cur['path'] ?? '') : '';
+    if ($path === '' || !is_file($path)) return 0;
+
+    $delay      = 0.0;
+    $base       = rtrim($base_dir, '/') . '/';
+    $cache_file = rtrim($base_dir, '/') . '/duration_cache.json';
+    if (strncmp($path, $base, strlen($base)) === 0 && is_file($cache_file)) {
+        $cache = json_decode((string)@file_get_contents($cache_file), true);
+        $rel   = substr($path, strlen($base));
+        $delay = is_array($cache) ? (float)($cache[$rel] ?? 0) : 0.0;
+    }
+    if ($delay <= 0) {
+        $ffprobe = trim((string)@shell_exec('command -v ffprobe 2>/dev/null'));
+        if ($ffprobe !== '') {
+            $raw = @shell_exec($ffprobe . ' -v error -show_entries format=duration'
+                 . ' -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg($path) . ' 2>/dev/null');
+            $delay = (float)trim((string)$raw);
+        }
+    }
+    if ($delay <= 0 || $delay > 7200) return 0;
+    return (int)round($delay);
+}
+
+/**
+ * HORA HABLADA: resuelve el token NS_HORA_TOKEN uniendo los clips de la hora
+ * actual en la zona horaria de la radio:
+ *   - 00:23 -> HRS00.mp3 + MIN23.mp3
+ *   - 00:00 -> HRS00.mp3 + HRS00_0.mp3   (hora exacta)
+ * Devuelve la ruta de un MP3 (cacheado por HHMM en .nextsong_state/hora_cache/),
+ * o '' si no hay clips disponibles. Nunca lanza excepción.
+ */
+function ns_resolve_hora($base_dir, $tz, $app_data, $state_dir, $radio = []) {
+    // Carpeta de clips: hora_folder si está definida; si no, HORAS (fija).
+    $folder = trim((string)($app_data['hora_folder'] ?? ''));
+    if ($folder === '' || strpos($folder, '..') !== false) $folder = 'HORAS';
+    $voice_dir = rtrim($base_dir, '/') . '/' . trim($folder, '/');
+    if (!is_dir($voice_dir)) return '';
+
+    // Hora/minuto de la RADIO (no del servidor).
+    try {
+        $now = new DateTime('now', new DateTimeZone(is_string($tz) && $tz !== '' ? $tz : 'America/Costa_Rica'));
+    } catch (\Throwable $e) {
+        try { $now = new DateTime('now', new DateTimeZone('America/Costa_Rica')); }
+        catch (\Throwable $e2) { return ''; }
+    }
+    // COMPENSACIÓN DEL PREFETCH: sin esto el anuncio sale una canción atrasado
+    // (se generaba con la hora del momento en que Liquidsoap pidió el request).
+    $hora_delay = ns_hora_prefetch_delay($base_dir, $state_dir);
+    if ($hora_delay > 0) $now->setTimestamp($now->getTimestamp() + $hora_delay);
+
+    $H = $now->format('H');   // 00..23
+    $M = $now->format('i');   // 00..59
+
+    $pick = function ($cands) use ($voice_dir) {
+        foreach ($cands as $c) {
+            $p = $voice_dir . '/' . $c;
+            if (is_file($p) && is_readable($p)) return $p;
+        }
+        return '';
+    };
+    $hora_file = $pick(["HRS{$H}.mp3", 'HRS' . (int)$H . '.mp3']);
+    if ($hora_file === '') return '';  // sin locución de hora no hay anuncio
+    // Hora exacta: el clip "en punto" puede estar nombrado con O (HRS00_O.mp3)
+    // o con cero (HRS00_0.mp3); se aceptan ambas (y minúsculas).
+    $min_file = ($M === '00')
+        ? $pick(["HRS{$H}_O.mp3", "HRS{$H}_o.mp3", "HRS{$H}_0.mp3",
+                 'HRS' . (int)$H . '_O.mp3', 'HRS' . (int)$H . '_o.mp3', 'HRS' . (int)$H . '_0.mp3'])
+        : $pick(["MIN{$M}.mp3", 'MIN' . (int)$M . '.mp3']);
+
+    $parts = array_values(array_filter([$hora_file, $min_file], function ($x) { return $x !== ''; }));
+    if (!$parts) return '';
+    if (count($parts) === 1) return $parts[0];   // falta un clip: al menos la hora
+
+    // Cache por HHMM. El nombre lleva " - " para que el pipeline de metadata
+    // existente muestre "La Hora - HH MM" en el stream y en el panel.
+    $cache_dir = rtrim($state_dir, '/') . '/hora_cache';
+    if (!is_dir($cache_dir)) @mkdir($cache_dir, 0775, true);
+    $out = $cache_dir . "/La Hora - {$H} {$M}.mp3";
+
+    $src_mtime = 0;
+    foreach ($parts as $p) { $src_mtime = max($src_mtime, (int)@filemtime($p)); }
+    if (is_file($out) && @filesize($out) > 0 && @filemtime($out) >= $src_mtime) return $out;
+
+    // Concatenar con ffmpeg (re-encode: tolera clips con parámetros distintos).
+    $ffmpeg = '/usr/bin/ffmpeg';
+    if (!is_file($ffmpeg)) {
+        $found = trim((string)@shell_exec('command -v ffmpeg 2>/dev/null'));
+        $ffmpeg = ($found !== '' && is_file($found)) ? $found : '';
+    }
+    if ($ffmpeg === '') return $hora_file;   // sin ffmpeg: suena solo la hora
+
+    $bitrate = (int)($radio['bitrate'] ?? 128);
+    if ($bitrate < 64 || $bitrate > 320) $bitrate = 128;
+
+    $inputs = ''; $labels = '';
+    foreach ($parts as $i => $p) {
+        $inputs .= ' -i ' . escapeshellarg($p);
+        $labels .= "[{$i}:a]";
+    }
+    $tmp = $out . '.tmp.' . getmypid() . '.mp3';
+    $cmd = $ffmpeg . ' -y -hide_banner -loglevel error' . $inputs
+         . ' -filter_complex ' . escapeshellarg($labels . 'concat=n=' . count($parts) . ':v=0:a=1[o]')
+         . ' -map "[o]" -c:a libmp3lame -b:a ' . $bitrate . 'k -ar 44100 -ac 2 '
+         . escapeshellarg($tmp) . ' 2>&1';
+    @shell_exec($cmd);
+
+    if (is_file($tmp) && @filesize($tmp) > 0) {
+        @rename($tmp, $out);
+        @chmod($out, 0664);
+        return $out;
+    }
+    @unlink($tmp);
+    return $hora_file;   // ffmpeg falló: al menos la hora
+}
+
 function ns_pick_one($files, $pl_name, $avoid_last = []) {
     if (empty($files)) return null;
     $n = count($files);
@@ -738,10 +911,19 @@ function ns_pick_seq_playlist(&$seq_st, $app_data, $pl_name, $base_dir, $avoid_l
     // Playlist "general" = backward compat: siempre aleatorio mezclando todas carpetas
     // (no es una secuencia de presentación, es la rotación general)
     if ($tipo === 'carpetas' && $pl_name === 'general') {
-        $files = ns_load_files_for_playlist($app_data, $pl_name, $base_dir);
-        $avoid = $allowRepeat ? [] : (is_array($avoid_last) ? array_slice($avoid_last, -8) : []);
-        $picked = ns_pick_one($files, $pl_name, $avoid);
-        return [$picked, $pl_name];
+        // Si el usuario intercaló el item "HORA" en la rotación general, se
+        // respeta el ORDEN de los items (paso a paso, un tema aleatorio por
+        // carpeta) en vez del merge aleatorio de todas las carpetas.
+        $hasHoraToken = false;
+        foreach ((array)$items as $__it) { if ($__it === NS_HORA_TOKEN) { $hasHoraToken = true; break; } }
+        unset($__it);
+        if (!$hasHoraToken) {
+            $files = ns_load_files_for_playlist($app_data, $pl_name, $base_dir);
+            $avoid = $allowRepeat ? [] : (is_array($avoid_last) ? array_slice($avoid_last, -8) : []);
+            $picked = ns_pick_one($files, $pl_name, $avoid);
+            return [$picked, $pl_name];
+        }
+        // Con @HORA@ presente: cae al flujo secuencial de abajo.
     }
 
     // Reset secuencia si la playlist actual es DIFERENTE a la última llamada
@@ -774,6 +956,12 @@ function ns_pick_seq_playlist(&$seq_st, $app_data, $pl_name, $base_dir, $avoid_l
         $isLastItem = ($idx === ($count_items - 1));
         $rel = $items[$idx] ?? '';
         if (!is_string($rel) || $rel === '') return [null, null];
+        // Item especial "HORA": avanza el índice igual que con una canción.
+        if ($rel === NS_HORA_TOKEN) {
+            if (!$isLastItem) { $seq_st['archivos_idx'][$pl_name] = ($idx + 1); }
+            else { $seq_st['archivos_idx'][$pl_name] = $count_items; $seq_st['seq_end_flag'][$pl_name] = true; }
+            return [NS_HORA_TOKEN, $pl_name];
+        }
         $abs = rtrim($base_dir, '/\\') . '/' . $rel;
         // Si NO es el último: avanzar idx normal para la próxima llamada.
         // Si SÍ es el último: NO avanzamos idx (se queda en count), y marcamos FLAG.
@@ -802,6 +990,11 @@ function ns_pick_seq_playlist(&$seq_st, $app_data, $pl_name, $base_dir, $avoid_l
     $tried = 0;
     $picked = null;
     while ($tried < $count_items && $folder !== '' && $picked === null) {
+        // Item especial "HORA": un paso más de la secuencia.
+        if ($folder === NS_HORA_TOKEN) {
+            $seq_st['carpetas_idx'][$pl_name] = ($idx + 1) % $count_items;
+            return [NS_HORA_TOKEN, $pl_name];
+        }
         $files_in_step = ns_expand_files($base_dir, [$folder], 'carpetas');
         if (!empty($files_in_step)) {
             $avoid = $allowRepeat ? [] : (is_array($avoid_last) ? array_slice($avoid_last, -8) : []);
@@ -1126,6 +1319,9 @@ foreach (($app_data['intercalators'] ?? []) as $__int) {
 if ($spot_override_folder === null) {
     foreach (($app_data['playlists'] ?? []) as $__pl_n => $__pl_cfg) {
         if (!is_array($__pl_cfg)) continue;
+        // Intercalado heredado por N: solo playlists de CARPETAS (rotación).
+        // Las de tipo 'archivos' son secuencia exacta y no aplican.
+        if ((($__pl_cfg['tipo'] ?? 'carpetas') !== 'carpetas')) continue;
         $__every = (int)($__pl_cfg['repeat_every_n_songs'] ?? 0);
         if ($__every <= 0) continue;
         $__allowRepeat = !empty($__pl_cfg['allow_repeat']);
@@ -1156,7 +1352,7 @@ if ($spot_override_folder !== null && is_array($spot_override_files) && !empty($
 if ($picked_file === null && $spot_override_pl !== null) {
     // Spots backward compat (repeat_every_n_songs): usamos secuencia si es tipo archivos / carpetas
     list($p, $pPl) = ns_pick_seq_playlist($seq_st, $app_data, $spot_override_pl, $base_dir, []);
-    if ($p && is_file($p)) {
+    if ($p && ($p === NS_HORA_TOKEN || is_file($p))) {
         $picked_file = $p;
         $picked_pl = $spot_override_pl;
     }
@@ -1169,7 +1365,7 @@ if ($picked_file === null) {
         $allowRepeat = !empty($plCfg['allow_repeat']);
         $avoidArr = $allowRepeat ? [] : array_slice($last, -8);
         list($p, $pPl) = ns_pick_seq_playlist($seq_st, $app_data, $pl_name, $base_dir, $avoidArr);
-        if ($p && is_file($p)) {
+        if ($p && ($p === NS_HORA_TOKEN || is_file($p))) {
             $picked_file = $p;
             $picked_pl = $pl_name;
             break;
@@ -1253,6 +1449,20 @@ if (!$picked_file) {
     }
 }
 
+// Item especial "HORA": resolver a un MP3 de hora hablada (HRS<HH> + MIN<MM> /
+// HRS<HH>_0 unidos con ffmpeg y cacheados por minuto). Se resuelve ANTES de
+// escribir historial/current_song para que el título mostrado sea el del cache.
+if ($picked_file === NS_HORA_TOKEN) {
+    $hora_resolved = ns_resolve_hora($base_dir, $tz, $app_data, $NS_STATE_DIR, $radio);
+    if (is_string($hora_resolved) && $hora_resolved !== '' && is_file($hora_resolved)) {
+        $picked_file = $hora_resolved;
+    } else {
+        // Sin clips disponibles: no romper el stream; seguir con silencio corto.
+        $short_sil = "{$NS_STATE_DIR}/short_silence.mp3";
+        $picked_file = is_file($short_sil) ? $short_sil : "/usr/share/icecast2/web/silence.mp3";
+    }
+}
+
 if ($picked_file) {
     array_unshift($last, $picked_file);
     $last = array_slice(array_values(array_unique($last)), 0, 16);
@@ -1287,13 +1497,19 @@ if ($picked_file) {
     $fnStemTitle   = $isSilenceFile ? '' : preg_replace('/\.[^.]+$/', '', (string)basename((string)$picked_file));
     $hasDashName   = (!$isSilenceFile && is_string($fnStemTitle) && strpos($fnStemTitle, ' - ') !== false);
     $metaFallbackTitle = !empty($meta['title']) ? $meta['title'] : (ns_filename_parse($picked_file)['title'] ?? basename($picked_file));
+    // Carpetas con nombre oculto: se muestra el nombre de la emisora en vez del
+    // nombre del archivo (el stream hace lo mismo desde el .liq).
+    $hideTitle   = ns_title_is_hidden($picked_file, $app_data);
+    $stationName = trim((string)($radio['nombre_emisora'] ?? ''));
+    if ($stationName === '') $stationName = (string)$mount;
+    $defCoverUrl = ns_get_fallback_cover_url($mount, $NS_STATE_DIR, $NS_DEFAULT_COVER, true);
     $now = [
         'mount'        => $mount,
         'radio_id'     => $radio['id'] ?? null,
-        'title'        => $hasDashName ? (string)$fnStemTitle : $metaFallbackTitle,
-        'artist'       => $hasDashName ? '' : ($meta['artist'] ?? ''),
-        'album'        => $meta['album']  ?? '',
-        'cover_url'    => !empty($meta['cover_url']) ? $meta['cover_url'] : ns_get_fallback_cover_url($mount, $NS_STATE_DIR, $NS_DEFAULT_COVER, true),
+        'title'        => $hideTitle ? $stationName : ($hasDashName ? (string)$fnStemTitle : $metaFallbackTitle),
+        'artist'       => $hideTitle ? '' : ($hasDashName ? '' : ($meta['artist'] ?? '')),
+        'album'        => $hideTitle ? '' : ($meta['album']  ?? ''),
+        'cover_url'    => $hideTitle ? $defCoverUrl : (!empty($meta['cover_url']) ? $meta['cover_url'] : $defCoverUrl),
         'filesize_mb'  => $meta['filesize_mb'] ?? (is_file($picked_file) ? round(@filesize($picked_file) / 1048576, 2) : 0.0),
         'path'         => $picked_file,
         'playlist'     => $real_pl_final,

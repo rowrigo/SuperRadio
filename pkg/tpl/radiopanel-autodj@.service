@@ -1,0 +1,27 @@
+[Unit]
+Description=SuperRadio AutoDJ (%i)
+After=network-online.target icecast2.service
+Wants=network-online.target
+# Evita que un fallo repetido bloquee los reintentos: queremos 24/7.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/media/radios/%i
+# TZ de la emisora (lo escribe el panel en programacion.json -> autodj.env)
+EnvironmentFile=-/var/media/radios/%i/autodj.env
+ExecStart=/usr/bin/liquidsoap /var/media/radios/%i/autodj.liq
+# Auto-recuperación: si Liquidsoap muere, systemd lo relanza (el watchdog real).
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+# KillMode=mixed: SIGTERM al proceso principal y SIGKILL al resto del cgroup.
+KillMode=mixed
+# Mismos logs que usaba el panel (append para no perder historial).
+StandardOutput=append:/var/media/radios/%i/liquidsoap_stdout.log
+StandardError=append:/var/media/radios/%i/liquidsoap_stderr.log
+
+[Install]
+WantedBy=multi-user.target

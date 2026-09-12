@@ -1,6 +1,9 @@
 <?php
 session_start();
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/lib_dominios.php';
+require_once __DIR__ . '/lib_limites.php';
+require_once __DIR__ . '/lib_storage.php';
 $_LT_SA = login_texts_get();
 $_LTS = $_LT_SA['superadmin'];
 $_LT403SA = $_LT_SA['ip403'];
@@ -433,12 +436,15 @@ function get_pid_using_port($port) {
 //  Por tanto: comprobar que un puerto esté "libre" = comprobar N Y N+1.
 //  Asignación: N, N+2, N+4,... (impares 8005, 8007, 8009,...) nunca consecutivos.
 // ============================================================
-function is_port_pair_in_use($port) {
-    $p0 = (int)$port;
-    $p1 = $p0 + 1;
-    $usado0 = is_port_system_in_use($p0);
-    $usado1 = is_port_system_in_use($p1);
-    if ($usado0 || $usado1) return true;
+function is_port_pair_in_use($port, $ignore_pid = null) {
+    foreach ([(int)$port, (int)$port + 1] as $p) {
+        if (!is_port_system_in_use($p)) continue;
+        if ($ignore_pid !== null) {
+            $pid = get_pid_using_port($p);
+            if ($pid !== null && $pid === (int)$ignore_pid) continue; // es el propio proceso de esta radio
+        }
+        return true;
+    }
     return false;
 }
 function puertos_usados_radios($radios, $except_key = null) {
@@ -539,6 +545,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $modo_radio = in_array(($_POST['modo_radio'] ?? 'autodj'), ['autodj', 'directa'], true) ? $_POST['modo_radio'] : 'autodj';
         $quota_mb = (int)($_POST['quota_mb'] ?? 0);
         if ($quota_mb <= 0) $quota_mb = ($modo_radio === 'directa') ? 0 : 2048;
+        $max_list = sp_limites_norm($_POST['max_listeners'] ?? 0);
         // ===== BITRATE (calidad MP3) =====
         $ALLOWED_BITRATES_CREATE = [64, 96, 128, 192, 256, 320];
         $bitrate = (int)($_POST['bitrate'] ?? 128);
@@ -609,10 +616,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'quota_mb' => $quota_mb,
                     'bitrate' => $bitrate,
                     'directa_fondo_oculto_path' => $directa_fondo_oculto_path,
+                    'max_listeners' => $max_list,
                     'created_at' => date('Y-m-d H:i:s')
                 ];
                 $base_new = "/var/media/radios/{$mount}";
                 if (!is_dir($base_new)) @mkdir($base_new, 0775, true);
+                // Cada radio nace con su propio page_config.json (config de la página pública),
+                // en su propia carpeta .nextsong_state → aislamiento total entre radios.
+                // (Vacío salvo meta: los lectores hacen merge con los defaults; el título
+                // vacío muestra el nombre_emisora hasta que el usuario lo personalice.)
+                $pg_state_new = $base_new . '/.nextsong_state';
+                if (!is_dir($pg_state_new)) @mkdir($pg_state_new, 0775, true);
+                $pg_cfg_new = $pg_state_new . '/page_config.json';
+                if (!file_exists($pg_cfg_new)) {
+                    $now_pg = date('c');
+                    @file_put_contents($pg_cfg_new, json_encode([
+                        'meta' => ['created_at' => $now_pg, 'updated_at' => $now_pg]
+                    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+                }
                 // Solo crear carpetas si es MODO AUTODJ (radio directa no necesita espacio de archivos)
                 if ($modo_radio === 'autodj') {
                     // IMPORTANTE: NO creamos carpeta "General" aquí.
@@ -637,14 +658,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             ],
                             'schedule'         => [],
                             'ads'              => [],
-                            'time_voice'       => ['enabled' => false, 'folder' => 'HORAS']
+                            'hora_folder'      => 'HORAS',
+                            'crossfade'        => ['fade_in' => 0, 'fade_out' => 0]
                         ];
                         @file_put_contents($prog_file, json_encode($default_prog, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
                     }
                 }
                 file_put_contents($db_file, json_encode($db, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+                $__rL = sp_limites_regenerate("crear radio {$mount}");
                 $msg = "Emisora '{$nombre}' creada exitosamente (Modo: " . strtoupper($modo_radio) . " · Puerto DJ: {$dj_port} · Bitrate: {$bitrate} kbps).";
-                $msg_type = "success";
+                if (!$__rL['ok']) { $msg .= ' ⚠️ Error al aplicar límites de nginx: ' . $__rL['output']; $msg_type = 'danger'; }
+                else { $msg_type = "success"; }
             }
         } else {
             $msg = "Todos los campos de la emisora son obligatorios.";
@@ -664,6 +688,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $dj_port = (int)($_POST['dj_port'] ?? 0);
             $modo_radio = in_array(($_POST['modo_radio'] ?? 'autodj'), ['autodj', 'directa'], true) ? $_POST['modo_radio'] : 'autodj';
             $quota_mb = (int)($_POST['quota_mb'] ?? -1);
+            $max_list = sp_limites_norm($_POST['max_listeners'] ?? ($db['radios'][$radio_key]['max_listeners'] ?? 0));
             // ===== BITRATE EDITAR =====
             $ALLOWED_BITRATES_UPD = [64, 96, 128, 192, 256, 320];
             $bitrate_upd = (int)($_POST['bitrate'] ?? 0);
@@ -689,6 +714,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $valid = true;
+            // PID del Liquidsoap de ESTA radio (para no tratar su propio puerto DJ como ocupado al editar encendida)
+            $_own_ls_pid = 0;
+            if ($old_mount !== '') {
+                $__own_pid_file = '/var/media/radios/' . $old_mount . '/autodj.pid';
+                if (is_file($__own_pid_file)) {
+                    $_own_ls_pid = (int)trim((string)@file_get_contents($__own_pid_file));
+                }
+            }
             if ($nombre && $new_mount) {
                 // Validar que el nuevo mountpoint no exista en OTRA emisora
                 foreach (($db['radios'] ?? []) as $ok => $or) {
@@ -713,7 +746,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $msg = "El puerto DJ {$dj_port} (o el siguiente {$dj_port} + 1) ya está ocupado por otra emisora. Liquidsoap reserva 2 puertos seguidos (N y N+1). Prueba con el puerto {$recom} (confirmado libre para pareja).";
                             $msg_type = "danger";
                             $valid = false;
-                        } elseif (is_port_pair_in_use($dj_port)) {
+                        } elseif (is_port_pair_in_use($dj_port, $_own_ls_pid ?? 0)) {
                             $pid_bad_p0 = get_pid_using_port($dj_port);
                             $pid_bad_p1 = get_pid_using_port($dj_port + 1);
                             $recom = siguiente_puerto_libre($db['radios'], $radio_key);
@@ -737,6 +770,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $db['radios'][$radio_key]['directa_fondo_oculto_path'] = $directa_fondo_oculto_path_edit;
                     if ($new_pass) $db['radios'][$radio_key]['encoder_pass_encrypted'] = encrypt_pass($new_pass);
                     if ($dj_port > 0) $db['radios'][$radio_key]['dj_port'] = $dj_port;
+                    $db['radios'][$radio_key]['max_listeners'] = $max_list;
 
                     // Si cambió el mountpoint → RENOMBRAR la carpeta de medios para no perder datos
                     if ($old_mount !== $new_mount && $old_mount !== '' && $new_mount !== '') {
@@ -753,6 +787,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     file_put_contents($db_file, json_encode($db, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
                     $msg = "Emisora '{$nombre}' actualizada correctamente." . ($old_mount !== $new_mount ? " (Mount renombrado de /{$old_mount} a /{$new_mount})" : '');
                     $msg_type = "success";
+                    // Si cambió el mountpoint, los vhosts de dominios llevan el mount embebido → regenerar
+                    if ($old_mount !== $new_mount) {
+                        $__regen = sp_dominios_regenerate("renombrar mount {$old_mount} -> {$new_mount}");
+                        if (!$__regen['ok']) {
+                            $msg = "Emisora actualizada. ⚠️ Error al actualizar nginx (dominios): " . $__regen['output'];
+                            $msg_type = 'danger';
+                        }
+                    }
+                    // Límite de conexiones simultáneas → regenerar nginx (también cubre el rename del mount)
+                    $__rL = sp_limites_regenerate("actualizar radio {$new_mount} (límite {$max_list})");
+                    if (!$__rL['ok']) {
+                        $msg .= ' ⚠️ Error al aplicar límites de conexiones en nginx: ' . $__rL['output'];
+                        $msg_type = 'danger';
+                    }
                 }
             } else {
                 $msg = "El nombre y el mountpoint no pueden estar vacíos.";
@@ -808,9 +856,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
             unset($db['radios'][$del_id]);
+            // Limpiar los dominios que apuntaban a la emisora borrada
+            if (is_array($db['dominios'] ?? null)) {
+                foreach ($db['dominios'] as $__canon => $__map) {
+                    if (is_array($__map) && ($__map['radio_id'] ?? '') === $del_id) unset($db['dominios'][$__canon]);
+                }
+                unset($__canon, $__map);
+            }
             file_put_contents($db_file, json_encode($db, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
             $msg = "Emisora eliminada por completo (BD, proceso Liquidsoap y archivos de /var/media/radios).";
             $msg_type = "success";
+            $__regen = sp_dominios_regenerate("eliminar radio {$del_id} (mount {$mount_to_del})");
+            if (!$__regen['ok']) {
+                $msg = "Emisora eliminada. ⚠️ Error al actualizar nginx (dominios): " . $__regen['output'];
+                $msg_type = 'danger';
+            }
+            $__rL = sp_limites_regenerate("eliminar radio {$del_id} (mount {$mount_to_del})");
+            if (!$__rL['ok']) {
+                $msg .= ' ⚠️ Error al actualizar límites de conexiones en nginx: ' . $__rL['output'];
+                $msg_type = 'danger';
+            }
         }
     }
 
@@ -1055,6 +1120,87 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     }
 
+    // 🌐 GUARDAR FOOTER GLOBAL DE LAS PÁGINAS PÚBLICAS (solo superadmin)
+    if ($action === 'save_public_footer') {
+        $txt = trim(preg_replace('/[\r\n\t]+/', ' ', (string)($_POST['pf_texto'] ?? '')));
+        if (function_exists('mb_substr')) { if (mb_strlen($txt) > 200) $txt = mb_substr($txt, 0, 200); }
+        elseif (strlen($txt) > 200) { $txt = substr($txt, 0, 200); }
+        $etiqueta = trim(preg_replace('/[\r\n\t]+/', ' ', (string)($_POST['pf_etiqueta'] ?? '')));
+        if (function_exists('mb_substr')) { if (mb_strlen($etiqueta) > 60) $etiqueta = mb_substr($etiqueta, 0, 60); }
+        elseif (strlen($etiqueta) > 60) { $etiqueta = substr($etiqueta, 0, 60); }
+        $link_txt = trim(preg_replace('/[\r\n\t]+/', ' ', (string)($_POST['pf_link_texto'] ?? '')));
+        if (function_exists('mb_substr')) { if (mb_strlen($link_txt) > 120) $link_txt = mb_substr($link_txt, 0, 120); }
+        elseif (strlen($link_txt) > 120) { $link_txt = substr($link_txt, 0, 120); }
+        $raw_url = trim((string)($_POST['pf_url'] ?? ''));
+        $url = '';
+        $err_pf = '';
+        if ($raw_url !== '') {
+            if (!preg_match('#^[a-z][a-z0-9+.\-]*://#i', $raw_url)) { $raw_url = 'https://' . $raw_url; }
+            $p = @parse_url($raw_url);
+            if (!$p || empty($p['host']) || !in_array(strtolower($p['scheme'] ?? ''), ['http', 'https'], true)) {
+                $err_pf = "La URL del enlace no es válida: usa http/https (no se permiten otros esquemas).";
+            } else {
+                $url = $raw_url;
+                if (function_exists('mb_substr')) { if (mb_strlen($url) > 500) $url = mb_substr($url, 0, 500); }
+                elseif (strlen($url) > 500) { $url = substr($url, 0, 500); }
+            }
+        }
+        if ($err_pf !== '') {
+            $msg = "❌ " . $err_pf;
+            $msg_type = 'danger';
+        } else {
+            if ($url === '') { $etiqueta = ''; $link_txt = ''; }
+            $db['public_footer'] = ['texto' => $txt, 'etiqueta' => $etiqueta, 'link_texto' => $link_txt, 'url' => $url];
+            file_put_contents($db_file, json_encode($db, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+            $msg = "✅ Footer de la página pública guardado.";
+            $msg_type = 'success';
+        }
+    }
+
+    // 🌐 GUARDAR / QUITAR DOMINIOS PROPIOS (solo superadmin; regenera nginx vía sudoers)
+    if ($action === 'dominio_guardar') {
+        $radio_id = trim((string)($_POST['radio_id'] ?? ''));
+        $err_dom = '';
+        $canon = sp_dominio_validar((string)($_POST['dominio'] ?? ''), $radio_id, $db, $err_dom);
+        if ($canon === '') {
+            $msg = "❌ " . $err_dom;
+            $msg_type = 'danger';
+        } else {
+            $now = date('Y-m-d H:i:s');
+            $prev = is_array($db['dominios'][$canon] ?? null) ? $db['dominios'][$canon] : [];
+            $db['dominios'][$canon] = [
+                'radio_id'   => $radio_id,
+                'www'        => true,
+                'creado'     => $prev['creado'] ?? $now,
+                'actualizado'=> $now,
+            ];
+            file_put_contents($db_file, json_encode($db, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+            $regen = sp_dominios_regenerate("guardar {$canon}");
+            if (!$regen['ok']) {
+                $msg = "❌ Dominio guardado pero no se pudo actualizar nginx: " . $regen['output'];
+                $msg_type = 'danger';
+            } else {
+                $msg = "✅ Dominio '{$canon}' asignado a la emisora. " . $regen['output'];
+                $msg_type = 'success';
+            }
+        }
+    }
+    if ($action === 'dominio_quitar') {
+        $del_dom = strtolower(trim((string)($_POST['dominio'] ?? '')));
+        if ($del_dom !== '' && preg_match('/^[a-z0-9.\-]+$/', $del_dom) && isset($db['dominios'][$del_dom])) {
+            unset($db['dominios'][$del_dom]);
+            file_put_contents($db_file, json_encode($db, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+            $regen = sp_dominios_regenerate("quitar {$del_dom}");
+            if (!$regen['ok']) {
+                $msg = "❌ Dominio quitado pero no se pudo actualizar nginx: " . $regen['output'];
+                $msg_type = 'danger';
+            } else {
+                $msg = "✅ Dominio '{$del_dom}' eliminado. " . $regen['output'];
+                $msg_type = 'success';
+            }
+        }
+    }
+
     // ✉️ GUARDAR CONFIGURACIÓN SMTP
     if ($action === 'save_smtp_config') {
         $cfg = sp_smtp_cfg_load($db);
@@ -1186,7 +1332,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // --- NAVEGACIÓN DE VISTAS ---
 $view = $_GET['view'] ?? 'dashboard';
-if (!in_array($view, ['dashboard', 'radios', 'clientes', 'seguridad', 'correo', 'cuenta'], true)) $view = 'dashboard';
+if (!in_array($view, ['dashboard', 'radios', 'dominios', 'clientes', 'seguridad', 'correo', 'cuenta'], true)) $view = 'dashboard';
 
 // --- RECALCULAR USO DE PUERTOS DESPUÉS DE CAMBIOS ---
 $_port_usage_viz = [];
@@ -1201,7 +1347,7 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SuperRadio · Superadministración</title>
-    <link rel="stylesheet" href="assets/css/panel.css">
+    <link rel="stylesheet" href="assets/css/panel.css?v=<?= time() ?>">
     <style>
         * { box-sizing: border-box; }
         html, body { margin: 0; background: #060b17; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow-y: auto; }
@@ -1365,6 +1511,7 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
         .vps-card-icon.ram   { background: rgba(168,85,247,0.12); color: #a855f7; }
         .vps-card-icon.net   { background: rgba(16,185,129,0.12); color: #10b981; }
         .vps-card-icon.listeners { background: rgba(244,63,94,0.12); color: #f43f5e; }
+        .vps-card-icon.disk   { background: rgba(245,158,11,0.12); color: #f59e0b; }
 
         .vps-card-titles { flex: 1; display: flex; flex-direction: column; gap: 4px; }
         .vps-card-label {
@@ -1400,6 +1547,7 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
         .vps-card-bar-fill.ram    { background: linear-gradient(90deg, #7c3aed, #a855f7); }
         .vps-card-bar-fill.net    { background: linear-gradient(90deg, #059669, #10b981); }
         .vps-card-bar-fill.listeners { background: linear-gradient(90deg, #e11d48, #f43f5e); }
+        .vps-card-bar-fill.disk   { background: linear-gradient(90deg, #d97706, #f59e0b); }
 
         .vps-card-sub {
             color: #cbd5e1;
@@ -1486,6 +1634,10 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
                 <span class="ico">👥</span> Clientes
                 <span class="count"><?= count($db['usuarios'] ?? []) ?></span>
             </a>
+            <a class="nav-item <?= ($view === 'dominios') ? 'active' : '' ?>" href="superradio.php?view=dominios">
+                <span class="ico">🌐</span> Dominios propios
+                <span class="count"><?= count($db['dominios'] ?? []) ?></span>
+            </a>
             <?php
                 $_sec_all = sec_get_all_throttles();
                 $_sec_all_ips = sec_ip_get_all();
@@ -1524,6 +1676,9 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
                 <?php elseif ($view === 'radios'): ?>
                     Gestión de Emisoras
                     <span class="sub" style="font-weight:normal; font-size:0.82rem; color:#94a3b8; margin-left:8px;">Crear, editar y eliminar emisoras</span>
+                <?php elseif ($view === 'dominios'): ?>
+                    Dominios propios
+                    <span class="sub" style="font-weight:normal; font-size:0.82rem; color:#94a3b8; margin-left:8px;">Asocia un dominio propio a la landing pública de cada emisora</span>
                 <?php elseif ($view === 'seguridad'): ?>
                     Seguridad y Bloqueos
                     <span class="sub" style="font-weight:normal; font-size:0.82rem; color:#94a3b8; margin-left:8px;">Anti-bruteforce: intentos fallidos y bloqueos de login</span>
@@ -1622,6 +1777,25 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
                         </div>
                         <div class="vps-card-bar">
                             <div class="vps-card-bar-fill listeners" id="vps-listeners-bar"></div>
+                        </div>
+                    </div>
+
+                    <!-- ALMACENAMIENTO (DISCO DEL SERVIDOR) -->
+                    <div class="vps-card">
+                        <div class="vps-card-head">
+                            <div class="vps-card-icon disk">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                            </div>
+                            <div class="vps-card-titles">
+                                <span class="vps-card-label">Almacenamiento (Disco)</span>
+                                <span class="vps-card-value small" id="vps-disk-val">-- / --</span>
+                                <div class="vps-card-sub" style="margin-top:2px;">
+                                    <span id="vps-disk-assigned">Asignado: -- · Total: --</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="vps-card-bar">
+                            <div class="vps-card-bar-fill disk" id="vps-disk-bar"></div>
                         </div>
                     </div>
                 </div>
@@ -1835,6 +2009,34 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
                         <button type="submit" class="btn btn-primary">Guardar datos del negocio</button>
                     </form>
                 </div>
+
+                <div class="card" style="max-width:680px;">
+                    <h4>Footer de la Página Pública del Player</h4>
+                    <p class="text-muted" style="margin-top:-6px; margin-bottom:16px;">Una sola configuración para TODAS las radios. El cliente no puede cambiarla desde su panel. Ejemplo de resultado: <em>Creada por amantes de la Radio · Soporte: Rodrigo.com</em> (solo "Rodrigo.com" es el enlace).</p>
+                    <form method="POST">
+                        <input type="hidden" name="action" value="save_public_footer">
+                        <div class="mb-3">
+                            <label class="form-label">Texto del footer (siempre texto plano)</label>
+                            <input class="form-control" type="text" name="pf_texto" value="<?= htmlspecialchars(trim($db['public_footer']['texto'] ?? '')) ?>" maxlength="200" placeholder="Creada por amantes de la Radio">
+                        </div>
+                        <div class="grid-2">
+                            <div class="mb-3">
+                                <label class="form-label">Etiqueta del enlace (texto plano, opcional)</label>
+                                <input class="form-control" type="text" name="pf_etiqueta" value="<?= htmlspecialchars(trim($db['public_footer']['etiqueta'] ?? '')) ?>" maxlength="60" placeholder="Soporte:">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Texto del enlace (lo que se ve, clicable)</label>
+                                <input class="form-control" type="text" name="pf_link_texto" value="<?= htmlspecialchars(trim($db['public_footer']['link_texto'] ?? '')) ?>" maxlength="120" placeholder="Rodrigo.com">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">URL del enlace (opcional)</label>
+                            <input class="form-control" type="text" name="pf_url" value="<?= htmlspecialchars(trim($db['public_footer']['url'] ?? '')) ?>" placeholder="https://rodrigo.com" inputmode="url">
+                        </div>
+                        <p class="text-muted" style="margin-top:-6px;">Si dejas la URL vacía solo se muestra el texto plano (sin enlace). El enlace abre en pestaña nueva.</p>
+                        <button type="submit" class="btn btn-primary">Guardar footer</button>
+                    </form>
+                </div>
             <?php endif; ?>
 
             <!-- VISTA: CORREO -->
@@ -2038,6 +2240,15 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
                             <small class="text-muted">Para modo Directa: 0 recomendado (no necesita espacio). Para AutoDJ: 1024-5120 MB recomendado.</small>
                         </div>
 
+                        <div class="mb-3" style="background:#1c1917; border:1px solid rgba(250,204,21,0.35); border-radius:8px; padding:12px 14px;">
+                            <label class="form-label" style="color:#fde68a; display:flex; align-items:center; gap:6px;">
+                                👥 Conexiones simultáneas máx. (oyentes a la vez) · SOLO SUPERADMIN
+                                <span class="tag amber" style="font-size:0.7rem;">Cliente no ve esta config</span>
+                            </label>
+                            <input type="number" name="max_listeners" value="0" min="0" max="100000" step="50" class="form-control">
+                            <small class="text-muted">0 = SIN límite. Ej.: 100, 200, 500, 1000... Al llegar al tope, los nuevos oyentes reciben rechazo (503) hasta que se libere una conexión. Se aplica al instante (nginx). El cliente no ve esta opción.</small>
+                        </div>
+
                         <div class="grid-2">
                             <div class="mb-3">
                                 <label class="form-label">🎚️ Calidad / Bitrate MP3 (kbps)</label>
@@ -2092,6 +2303,9 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
                                     <th>🎚️ Bitrate</th>
                                     <th>Encoder Pass</th>
                                     <th>Cuota</th>
+                                    <th>📦 Usado</th>
+                                    <th>Restante</th>
+                                    <th>👥 Límite</th>
                                     <th>Creada</th>
                                     <th style="text-align:right;">Acciones</th>
                                 </tr>
@@ -2109,6 +2323,23 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
                                     elseif ($bitrate_show >= 128)  { $br_tag_class = 'blue'; }
                                     elseif ($bitrate_show >= 96)   { $br_tag_class = 'amber'; }
                                     else                            { $br_tag_class = 'gray'; }
+
+                                    // Espacio usado / restante de la radio (escáner con caché en disco, TTL 120s)
+                                    $mount_r = trim((string)($r['mountpoint'] ?? ''), '/');
+                                    $radio_base_dir = $mount_r !== '' ? "/var/media/radios/{$mount_r}" : '';
+                                    $used_bytes = $radio_base_dir !== '' ? storage_dir_used_cached($radio_base_dir, $radio_base_dir . '/.nextsong_state/disk_usage.json', 120) : 0.0;
+                                    $quota_bytes = $quota > 0 ? $quota * 1024 * 1024 : 0.0;
+                                    $used_h = storage_format_bytes($used_bytes);
+                                    if ($quota_bytes > 0) {
+                                        $free_bytes = max(0.0, $quota_bytes - $used_bytes);
+                                        $free_h = storage_format_bytes($free_bytes);
+                                        $used_pct = (int)min(100, round(($used_bytes / $quota_bytes) * 100));
+                                        $used_pct_class = $used_pct >= 85 ? 'red' : ($used_pct >= 60 ? 'amber' : 'green');
+                                    } else {
+                                        $free_h = '∞';
+                                        $used_pct = null;
+                                        $used_pct_class = 'green';
+                                    }
                                 ?>
                                 <tr>
                                     <td style="font-weight:bold; min-width:180px;"><?= htmlspecialchars($r['nombre_emisora'] ?? '--') ?></td>
@@ -2129,6 +2360,21 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
                                     <td class="mono">
                                         <?= $quota === 0 ? '<span class="tag green">∞</span>' : $quota . ' MB' ?>
                                     </td>
+                                    <td class="mono" title="Espacio ocupado por esta emisora">
+                                        <?= htmlspecialchars($used_h) ?>
+                                    </td>
+                                    <td class="mono" title="Espacio libre dentro de la cuota asignada">
+                                        <?php if ($used_pct === null): ?>
+                                            <span class="tag green" title="Sin límite">∞</span>
+                                        <?php else: ?>
+                                            <span style="color:#4ade80;"><?= htmlspecialchars($free_h) ?></span>
+                                            <span class="tag <?= $used_pct_class ?>" style="margin-left:4px;"><?= $used_pct ?>%</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td class="mono">
+                                        <?php $_ml = (int)($r['max_listeners'] ?? 0); ?>
+                                        <?= $_ml === 0 ? '<span class="tag green" title="Sin límite">∞</span>' : '<span class="tag amber" title="Máximo de conexiones simultáneas">' . $_ml . '</span>' ?>
+                                    </td>
                                     <td class="text-muted"><?= htmlspecialchars($r['created_at'] ?? $r['fecha_creacion'] ?? '--') ?></td>
                                     <td class="actions" style="justify-content:flex-end;">
                                         <a href="panel.php?mount=<?= urlencode($r['mountpoint'] ?? '') ?>" class="btn btn-primary btn-sm" target="_blank" title="Abrir panel cliente">🎙️ Panel</a>
@@ -2141,7 +2387,7 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
                                     </td>
                                 </tr>
                                 <tr style="background:transparent;">
-                                    <td colspan="9" style="padding:0 8px 10px; border:none;">
+                                    <td colspan="12" style="padding:0 8px 10px; border:none;">
                                         <div class="row-form" id="edit-radio-<?= htmlspecialchars($rid) ?>">
                                             <form method="POST">
                                                 <input type="hidden" name="action" value="update_radio">
@@ -2184,6 +2430,14 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
                                                 <div class="mb-3">
                                                     <label class="form-label">Cuota de Espacio (MB) · 0 = ilimitado</label>
                                                     <input type="number" name="quota_mb" value="<?= (int)($r['quota_mb'] ?? 0) ?>" class="form-control" min="0">
+                                                </div>
+                                                <div class="mb-3" style="background:#1c1917; border:1px solid rgba(250,204,21,0.35); border-radius:8px; padding:12px 14px;">
+                                                    <label class="form-label" style="color:#fde68a; display:flex; align-items:center; gap:6px;">
+                                                        👥 Conexiones simultáneas máx. (oyentes a la vez) · SOLO SUPERADMIN
+                                                        <span class="tag amber" style="font-size:0.7rem;">Cliente no ve</span>
+                                                    </label>
+                                                    <input type="number" name="max_listeners" value="<?= (int)($r['max_listeners'] ?? 0) ?>" min="0" max="100000" step="50" class="form-control">
+                                                    <small class="text-muted">0 = SIN límite. Al llegar al tope, los nuevos oyentes reciben rechazo (503). Se aplica al instante (nginx).</small>
                                                 </div>
 
                                                 <div class="grid-2">
@@ -2242,6 +2496,84 @@ foreach (($db['radios'] ?? []) as $_k => $_r) {
                         </table>
                     </div>
                     <?php endif; ?>
+                </div>
+            <?php endif; ?>
+
+            <!-- VISTA: DOMINIOS PROPIOS -->
+            <?php if ($view === 'dominios'): ?>
+                <div class="page-header">
+                    <h2>🌐 Dominios propios
+                        <span class="sub">Asocia un dominio propio a la landing pública de cada emisora</span>
+                    </h2>
+                </div>
+                <div class="card">
+                    <h4>Dominios asignados a emisoras</h4>
+                    <?php
+                    $_sp_host = strtolower(trim((string)($_SERVER['HTTP_HOST'] ?? STREAM_HOST)));
+                    $_sp_host = preg_replace('/:\d+$/', '', $_sp_host);
+                    ?>
+                    <p class="text-muted" style="margin-top:-6px; margin-bottom:14px;">
+                        Cada emisora puede tener su propio dominio. Al abrirlo se muestra su página pública en la raíz (ej. <strong>dominio.com</strong> → tu emisora).
+                        En Cloudflare apunta el dominio a este servidor (registro <strong>A → IP del VPS</strong> o CNAME a <strong><?= htmlspecialchars($_sp_host) ?></strong>) con el proxy naranja y modo SSL <strong>Flexible</strong>:
+                        aquí NO se emite certificado por dominio (el servidor solo recibe HTTP:80). No requiere tocar nginx a mano: el panel lo configura solo.
+                    </p>
+
+                    <?php
+                    $__doms = is_array($db['dominios'] ?? null) ? $db['dominios'] : [];
+                    ksort($__doms);
+                    ?>
+                    <?php if (count($__doms) > 0): ?>
+                    <table class="table" style="margin-bottom:16px;">
+                        <thead>
+                            <tr>
+                                <th>Dominio</th>
+                                <th>Radio (mount)</th>
+                                <th style="width:120px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($__doms as $__canon => $__map):
+                                $__rid = is_array($__map) ? (string)($__map['radio_id'] ?? '') : '';
+                                $__rad = isset($db['radios'][$__rid]) ? $db['radios'][$__rid] : null;
+                                if (!$__rad) continue;
+                            ?>
+                            <tr>
+                                <td><a href="http://<?= htmlspecialchars($__canon) ?>" target="_blank" rel="noopener" style="color:#38bdf8;"><?= htmlspecialchars($__canon) ?></a></td>
+                                <td><?= htmlspecialchars($__rad['nombre_emisora'] ?? '') ?> <span class="chip">/<?= htmlspecialchars($__rad['mountpoint'] ?? '') ?></span></td>
+                                <td>
+                                    <form method="POST" onsubmit="return confirm('¿Quitar el dominio <?= htmlspecialchars(addslashes($__canon)) ?>?');" style="display:inline;">
+                                        <input type="hidden" name="action" value="dominio_quitar">
+                                        <input type="hidden" name="dominio" value="<?= htmlspecialchars($__canon) ?>">
+                                        <button type="submit" class="btn btn-danger btn-sm">Quitar</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    <?php else: ?>
+                    <p class="text-muted" style="margin-bottom:14px;">Aún no hay dominios asignados. Agrega el primero abajo.</p>
+                    <?php endif; ?>
+
+                    <form method="POST">
+                        <input type="hidden" name="action" value="dominio_guardar">
+                        <div class="grid-2">
+                            <div class="mb-3">
+                                <label class="form-label">Emisora</label>
+                                <select name="radio_id" class="form-control" required>
+                                    <option value="">— Seleccionar emisora —</option>
+                                    <?php foreach (($db['radios'] ?? []) as $__rkey => $__rad): ?>
+                                    <option value="<?= htmlspecialchars($__rkey) ?>"><?= htmlspecialchars($__rad['nombre_emisora'] ?? $__rkey) ?> (<?= htmlspecialchars($__rad['mountpoint'] ?? '') ?>)</option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Dominio</label>
+                                <input type="text" name="dominio" class="form-control" placeholder="dominio.com" pattern="[a-zA-Z0-9.\-]+" title="Solo el dominio: ej. dominio.com (se agrega www automáticamente)" required>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-success">➕ Asignar dominio</button>
+                    </form>
                 </div>
             <?php endif; ?>
 
@@ -3164,6 +3496,20 @@ async function updateAdminStats() {
             // Normalizamos contra 500 oyentes = 100%
             const pct = Math.max(0, Math.min(100, Math.round((listeners / 500) * 100)));
             lisBar.style.width = pct + '%';
+        }
+
+        // Almacenamiento (disco del servidor + cuota asignada a radios)
+        const diskVal = document.getElementById('vps-disk-val');
+        const diskBar = document.getElementById('vps-disk-bar');
+        const diskAssigned = document.getElementById('vps-disk-assigned');
+        const diskPercent = Math.max(0, Math.min(100, Number(data.disk_percent ?? 0)));
+        if (diskVal) diskVal.innerText = (data.disk_free_h || '--') + ' libres';
+        if (diskBar) diskBar.style.width = diskPercent + '%';
+        if (diskAssigned) {
+            const unlim = Number(data.radios_unlimited ?? 0);
+            let txt = 'Asignado: ' + (data.assigned_h || '0 B') + ' · Total: ' + (data.disk_total_h || '--');
+            if (unlim > 0) txt += ' · ' + unlim + (unlim === 1 ? ' radio sin límite' : ' radios sin límite');
+            diskAssigned.innerText = txt;
         }
     } catch (e) {}
 }

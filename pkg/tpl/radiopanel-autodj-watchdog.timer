@@ -1,0 +1,11 @@
+[Unit]
+Description=Ejecuta el watchdog del AutoDJ cada 2 minutos
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=120s
+AccuracySec=15s
+Unit=radiopanel-autodj-watchdog.service
+
+[Install]
+WantedBy=timers.target

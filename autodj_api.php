@@ -10,7 +10,7 @@ require_once __DIR__ . '/config.php';
 //    consultan carátula / historial sin credenciales. Permitirlos SIEMPRE.
 // =============================================================
 $action = strtolower(trim((string)($_REQUEST['action'] ?? ($_POST['action'] ?? ($_GET['action'] ?? '')))));
-$public_actions = ['get_now_playing', 'serve_default_cover', 'serve_cached_cover', 'serve_page_logo', 'serve_page_bg', 'get_page_config', 'stats'];
+$public_actions = ['get_now_playing', 'serve_default_cover', 'serve_cached_cover', 'serve_page_logo', 'serve_page_bg', 'serve_staff_photo', 'get_page_config', 'stats'];
 $force_public_ok = in_array($action, $public_actions, true);
 
 // =============================================================
@@ -21,21 +21,27 @@ $db = file_exists(DB_FILE) ? json_decode(file_get_contents(DB_FILE), true) : [];
 $sess_radio_id = $_SESSION['radio_id'] ?? '';
 $mount_param = strtolower(trim(preg_replace('/[^a-zA-Z0-9_-]/', '', $_REQUEST['mount'] ?? '')));
 $radio = null;
+$pg_radio_key = '';
+$pg_mount_ok = false; // true si el mount del REQUEST matcheó una radio (no el fallback)
 if (!empty($mount_param)) {
     foreach ($db['radios'] ?? [] as $k => $r) {
         $m_clean = strtolower(trim(preg_replace('/[^a-zA-Z0-9_-]/', '', $r['mountpoint'] ?? '')));
         if ($m_clean === $mount_param || $k === $mount_param || $k === 'radio_' . $mount_param || $k === 'rad_' . $mount_param) {
             $radio = $r;
+            $pg_radio_key = (string)$k;
+            $pg_mount_ok = true;
             break;
         }
     }
 }
 if (!$radio && !empty($sess_radio_id) && !empty($db['radios'][$sess_radio_id])) {
     $radio = $db['radios'][$sess_radio_id];
+    $pg_radio_key = (string)$sess_radio_id;
 }
 if (!$radio && !empty($db['radios'])) {
     $first_key = array_key_first($db['radios']);
     $radio = $db['radios'][$first_key];
+    $pg_radio_key = (string)$first_key;
 }
 if (!$radio) {
     header('Content-Type: application/json');
@@ -58,7 +64,12 @@ $default_data = [
     ],
     'schedule'         => [],
     'ads'              => [],
-    'time_voice'       => ['enabled' => false, 'folder' => '']
+    'crossfade'        => ['fade_in' => 0, 'fade_out' => 0],
+    // Carpeta de los clips de la hora (los usa el item "@HORA@" de la playlist).
+    'hora_folder'      => 'HORAS',
+    // Carpetas cuyo NOMBRE no se muestra en el reproductor: en su lugar se
+    // manda el nombre de la emisora (panel/web y stream).
+    'hide_title_folders' => []
 ];
 $GLOBALS['pid_file'] = $pid_file;
 
@@ -88,10 +99,6 @@ unset($auth_db, $auth_only_one_radio, $auth_ok, $force_public_ok);
 // - Windows/Laragon: scandir() devuelve CP1252 / ISO-8859-1
 // - Linux/VPS: scandir() devuelve UTF-8
 // - Normaliza todo a UTF-8 válido y quita acentos/ñ para comparaciones seguras
-// =============================================================
-// =============================================================
-// Helpers de encoding — evitamos redeclaración si autodj_debug.php
-// ya los cargó (ambos archivos incluyen helpers idénticos).
 // =============================================================
 if (!function_exists('to_utf8_safe')) {
 function to_utf8_safe($str) {
@@ -200,7 +207,20 @@ function generate_liq_code($app_data, $def_pl_name, $base_dir, $radio, $mount, $
     }
 
     $tz = !empty($app_data['timezone']) ? $app_data['timezone'] : 'America/Costa_Rica';
-    $time_voice = $app_data['time_voice'] ?? ['enabled' => false, 'folder' => ''];
+
+    // ===== CROSSFADE ENTRE PISTAS (estilo Centova) =====
+    // Funde el final de la pista actual (fade_out) con el inicio de la siguiente
+    // (fade_in) para quitar espacios entre canciones. Cada valor en segundos
+    // (0.5, 1, 1.5...); 0 en AMBOS = desactivado (transición normal sin fundido).
+    // Liquidsoap bufferiza max(fade_in,fade_out) s de cada lado para el cruce.
+    $cf_cfg = (is_array($app_data['crossfade'] ?? null)) ? $app_data['crossfade'] : ['fade_in' => 0, 'fade_out' => 0];
+    $cf_fade_in  = round(max(0, min(5.0, (float)($cf_cfg['fade_in']  ?? 0))) * 2) / 2;
+    $cf_fade_out = round(max(0, min(5.0, (float)($cf_cfg['fade_out'] ?? 0))) * 2) / 2;
+    $cf_dur = max($cf_fade_in, $cf_fade_out);
+    $cf_on  = ($cf_dur > 0);
+    $cf_fi_s = number_format($cf_fade_in,  1, '.', '');
+    $cf_fo_s = number_format($cf_fade_out, 1, '.', '');
+    $cf_du_s = number_format($cf_dur,      1, '.', '');
 
     $php_bin = '/usr/bin/php';
     $ns_php = __DIR__ . '/next_song.php';
@@ -346,6 +366,34 @@ function generate_liq_code($app_data, $def_pl_name, $base_dir, $radio, $mount, $
         //  "filename" (ruta completa) en la metadata de cada canción.
         //  silence.mp3 (última red de seguridad) se deja intacto.
         // ============================================================
+        // ============================================================
+        //  CARPETAS CON NOMBRE OCULTO EN EL REPRODUCTOR
+        //  Para las pistas que salgan de estas carpetas NO se manda el nombre
+        //  del archivo: se manda el nombre de la emisora. Los fragmentos se
+        //  comparan contra la ruta completa ("filename") de la metadata.
+        //  El item @HORA@ se materializa en <estado>/hora_cache/, así que si se
+        //  oculta la carpeta de locuciones su anuncio queda oculto también.
+        //  Requiere REINICIAR el AutoDJ (es código del script, no datos).
+        // ============================================================
+        $_htf_folders = (isset($app_data['hide_title_folders']) && is_array($app_data['hide_title_folders'])) ? $app_data['hide_title_folders'] : [];
+        $_htf_frags   = [];
+        foreach ($_htf_folders as $_htf_name) {
+            if (!is_string($_htf_name)) continue;
+            $_htf_name = trim($_htf_name);
+            if ($_htf_name === '') continue;
+            $_htf_frags['/' . $_htf_name . '/'] = true;
+        }
+        $_htf_voice = trim((string)($app_data['hora_folder'] ?? ''));
+        if ($_htf_voice === '') $_htf_voice = 'HORAS';
+        foreach (array_keys($_htf_frags) as $_htf_frag) {
+            if (strcasecmp(trim($_htf_frag, '/'), $_htf_voice) === 0) { $_htf_frags['/hora_cache/'] = true; break; }
+        }
+        $_htf_station = trim((string)($radio['nombre_emisora'] ?? ''));
+        if ($_htf_station === '') $_htf_station = (string)$mount;
+        $_htf_quote = function ($s) { return '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], (string)$s) . '"'; };
+        $liq_code .= "# Carpetas con nombre oculto: se manda el nombre de la emisora en su lugar\n";
+        $liq_code .= "ns_hide_fragments = [" . implode(', ', array_map($_htf_quote, array_keys($_htf_frags))) . "]\n";
+        $liq_code .= "ns_station_title = " . $_htf_quote($_htf_station) . "\n\n";
         $liq_code .= <<<'LIQ_META'
 # ---------- Título al stream = nombre del archivo (sin extensión) ----------
 def ns_meta_get(m, key) =
@@ -353,9 +401,23 @@ def ns_meta_get(m, key) =
   list.iter(fun (kv) -> if fst(kv) == key then ret := snd(kv) end, m)
   !ret
 end
-def ns_meta_title_filename(m) =
+# ---------- Versión para MÚSICA: SIEMPRE genera título desde el archivo ----------
+# Igual que la de arriba, pero si el nombre no trae " - " (p. ej.
+# "JAMIE WALTERS- HOLD ON.mp3", "TOTO-99.mp3" o "ALL THE MAN THAT I NEED.mp3")
+# envía el nombre COMPLETO del archivo como título. Así los reproductores
+# SIEMPRE muestran el nombre de la canción aunque el MP3 no traiga ID3.
+# ¿La ruta cae en una carpeta con nombre oculto? (ns_hide_fragments se genera
+# arriba a partir de la config "hide_title_folders" de la radio).
+def ns_path_is_hidden(f) =
+  hit = ref(false)
+  list.iter(fun (frag) -> if string.contains(substring=frag, f) then hit := true end, ns_hide_fragments)
+  hit()
+end
+def ns_meta_title_music(m) =
   f = ns_meta_get(m, "filename")
-  if f == "" or string.contains(substring="silence.mp3", f) then
+  if ns_path_is_hidden(f) then
+    [("title", ns_station_title)]
+  elsif f == "" or string.contains(substring="silence", f) then
     m
   else
     base = list.hd(list.rev(string.split(separator="/", f)))
@@ -365,15 +427,12 @@ def ns_meta_title_filename(m) =
     else
       base
     end
-    # Liquidsoap/Icecast componen "artista - título"; para que el
-    # reproductor muestre EXACTAMENTE el nombre del archivo partimos
-    # el " - " del nombre en artista/título (ej: "A - T" -> A / T).
-    # Si el nombre no trae " - " dejamos la metadata original.
     sp = string.split(separator=" - ", stem)
     if list.length(sp) >= 2 then
-      [("artist", list.hd(sp)), ("title", string.concat(separator=" - ", list.tl(sp)))]
+      [("artist", string.trim(list.hd(sp))),
+       ("title", string.trim(string.concat(separator=" - ", list.tl(sp))))]
     else
-      m
+      [("title", string.trim(stem))]
     end
   end
 end
@@ -381,7 +440,12 @@ end
 LIQ_META;
         $liq_code .= "#    mksafe() solo aquí: protege si next_song.php falla totalmente\n";
         $liq_code .= "#    (pero el nivel 3 safety_silence lo cubre de todas formas)\n";
-        $liq_code .= "autodj_music = map_metadata(ns_meta_title_filename, dyn_source)\n";
+        $liq_code .= "autodj_music = map_metadata(update=false, ns_meta_title_music, dyn_source)\n";
+        if ($cf_on) {
+            // Crossfade: funde cada par de pistas consecutivas (música, anuncios,
+            // cortinillas... todo el flujo del AutoDJ) sin dejar huecos.
+            $liq_code .= "autodj_music = crossfade(id=\"xf_autodj\", duration={$cf_du_s}, fade_in={$cf_fi_s}, fade_out={$cf_fo_s}, smart=false, autodj_music)\n";
+        }
         $liq_code .= "autodj_safe = mksafe(autodj_music)\n\n";
 
         $liq_code .= "# 2) DJ vivo NIVEL 1 (input.harbor). ¡¡SIN mksafe()!! — clave arquitectónica:\n";
@@ -471,83 +535,28 @@ def ns_pick_sched()
   end
 end
 src_sched = request.dynamic(id="sched_dyn", timeout=30.0, ns_pick_sched)
-src_sched = map_metadata(ns_meta_title_filename, src_sched)
+src_sched = map_metadata(update=false, ns_meta_title_music, src_sched)
+__XF_SCHED__
 sched_gate = switch(track_sensitive=true, [(ns_sched_activa, src_sched)])
 music_layer = fallback(track_sensitive=false, [sched_gate, autodj_layer])
 
 LQ;
                 $liq_code = str_replace(
-                    ['__PHPBIN__', '__NEXTSONG__', '__MOUNT__', '__SILENCE__'],
-                    ['/usr/bin/php', $liq_ns_php, $mount, $blank_silence],
+                    ['__PHPBIN__', '__NEXTSONG__', '__MOUNT__', '__SILENCE__', '__XF_SCHED__'],
+                    [
+                        '/usr/bin/php',
+                        $liq_ns_php,
+                        $mount,
+                        $blank_silence,
+                        $cf_on ? "src_sched = crossfade(id=\"xf_sched\", duration={$cf_du_s}, fade_in={$cf_fi_s}, fade_out={$cf_fo_s}, smart=false, src_sched)\n" : ''
+                    ],
                     $liq_code
                 );
                 $music_src_name = 'music_layer';
             }
         }
-        // La capa final (con o sin voz de hora) antepone el DJ vivo: fallback([dj_harbor, ...]).
-
-        // ============================================================
-        // VOZ DE HORA (24h): cada hora exacta baja la música al 18%
-        // (smooth_add p=0.18) y suena {folder}/HH.mp3 al 100%.
-        // SOLO sobre AutoDJ (incluye la programación inmediata); el DJ
-        // en vivo queda fuera (no se ducea). La ventana horaria se
-        // calcula en Liquidsoap; el archivo lo decide timevoice.php.
-        // ============================================================
-        $voice_enabled_block = false;
-        if (!empty($time_voice['enabled']) && !empty($time_voice['folder'])) {
-            $voice_dir_check = "{$base_dir}/{$time_voice['folder']}";
-            if (is_dir($voice_dir_check)) {
-                $voice_enabled_block = true;
-                try {
-                    $tz_off_voice = (int)(new DateTime('now', new DateTimeZone($tz)))->getOffset();
-                } catch (\Throwable $e) { $tz_off_voice = -21600; }
-                $voice_window_sec = 6; // segundos tras :00 en que puede arrancar el anuncio
-                $timevoice_php = str_replace('\\', '/', __DIR__ . '/timevoice.php');
-                $liq_code .= strtr(<<<'LQ'
-# =============== VOZ DE HORA (24h) con ducking 18% ===============
-# Ventana: primeros __VENTANA__s de cada hora local (timezone ajustes).
-def ns_voz_activa() =
-  now = int_of_float(time()) + __TZOFF__
-  (now mod 3600) <= __VENTANA__
-end
-def ns_voz_pick()
-  lines = get_process_lines("__PHPBIN__ __HELPER__ --mount=__MOUNT__")
-  if list.length(lines) > 0 then
-    f = string.trim(list.hd(lines))
-    if f != "" and file.exists(f) then
-      ignore(log(label="TIMEVOICE", level=3, "OK play: " ^ f))
-      request.create(f)
-    else
-      request.create("__SILENCE__")
-    end
-  else
-    request.create("__SILENCE__")
-  end
-end
-src_voz = request.dynamic(id="timevoice_dyn", timeout=10.0, ns_voz_pick)
-src_voz = map_metadata(ns_meta_title_filename, src_voz)
-voz_special = switch(track_sensitive=false, [(ns_voz_activa, src_voz)])
-radio_duck = smooth_add(normal=__MUSIC__, special=voz_special, p=0.18)
-
-LQ
-                , [
-                    '__TZOFF__'   => (string)$tz_off_voice,
-                    '__VENTANA__' => (string)$voice_window_sec,
-                    '__PHPBIN__'  => '/usr/bin/php',
-                    '__HELPER__'  => $timevoice_php,
-                    '__MOUNT__'   => $mount,
-                    '__SILENCE__' => $blank_silence,
-                    '__MUSIC__'   => $music_src_name,
-                ]);
-            } else {
-                $GLOBALS['__liq_warnings'][] = "Voz de hora: carpeta '{$time_voice['folder']}' no existe. Omitido.";
-            }
-        }
-        if ($voice_enabled_block) {
-            $liq_code .= "final_stream = fallback(track_sensitive=false, [dj_harbor, radio_duck])\n\n";
-        } else {
-            $liq_code .= "final_stream = fallback(track_sensitive=false, [dj_harbor, " . $music_src_name . "])\n\n";
-        }
+        // La capa final antepone el DJ vivo al AutoDJ (música + programación).
+        $liq_code .= "final_stream = fallback(track_sensitive=false, [dj_harbor, " . $music_src_name . "])\n\n";
 
     }
 
@@ -601,6 +610,57 @@ function run_liquidsoap_check($liq_bin, $liq_file) {
     ];
 }
 
+// =====================================================================
+// systemd: el AutoDJ corre como unidad radiopanel-autodj@<mount>, es decir
+// FUERA del cgroup de php8.1-fpm. Así un reinicio/actualización de php-fpm
+// o de libc ya NO mata el stream (incidente 11-sep-2026) y además la unidad
+// tiene Restart=always (watchdog) + arranque tras reboot.
+// Si la unidad no está instalada, se mantiene el método clásico (exec).
+// =====================================================================
+if (!function_exists('autodj_unit_name')) {
+function autodj_unit_name($mount) {
+    $m = strtolower(preg_replace('/[^a-zA-Z0-9_-]/', '', (string)$mount));
+    return $m !== '' ? 'radiopanel-autodj@' . $m : '';
+}
+}
+
+if (!function_exists('autodj_systemd_available')) {
+function autodj_systemd_available() {
+    static $ok = null;
+    if ($ok !== null) return $ok;
+    $ok = false;
+    if (is_file('/etc/systemd/system/radiopanel-autodj@.service') && is_executable('/usr/bin/systemctl')) {
+        // Si systemd responde siempre devuelve una línea (p. ej. "not-found")
+        $probe = @shell_exec('/usr/bin/systemctl show -p LoadState --value radiopanel-autodj@selftest 2>/dev/null');
+        $ok = (trim((string)$probe) !== '');
+    }
+    return $ok;
+}
+}
+
+if (!function_exists('autodj_systemd_mainpid')) {
+function autodj_systemd_mainpid($unit) {
+    if ($unit === '') return 0;
+    return (int)trim((string)@shell_exec('/usr/bin/systemctl show -p MainPID --value ' . escapeshellcmd($unit) . ' 2>/dev/null'));
+}
+}
+
+// Mata el proceso previo registrado en autodj.pid. Solo se usa en el arranque
+// CLÁSICO (exec). En modo systemd NO debe llamarse: "systemctl restart" ya
+// detiene el proceso anterior, y matarlo por PID haría que Restart=always
+// reviviera la unidad con un KILL espurio (doble arranque, visto 12-sep-2026).
+if (!function_exists('autodj_kill_stale_pid')) {
+function autodj_kill_stale_pid($pid_file) {
+    if (!file_exists($pid_file)) return;
+    $old_pid = (int)trim(@file_get_contents($pid_file));
+    if ($old_pid > 1) {
+        @exec("kill -9 {$old_pid} 2>/dev/null");
+        @unlink($pid_file);
+        usleep(150000);
+    }
+}
+}
+
 function start_autodj($data_file, $default_data, $base_dir, $radio, $mount, $encoder_pass, $pid_file, $liq_file) {
     // ===== OPCACHE INVALIDATE FORZADO (EVITA STALE generate_liq_code) =====
     if (function_exists('opcache_reset'))       { @opcache_reset(); }
@@ -608,7 +668,6 @@ function start_autodj($data_file, $default_data, $base_dir, $radio, $mount, $enc
         @opcache_invalidate(__FILE__, true);
         @opcache_invalidate(__DIR__ . '/config.php', true);
         @opcache_invalidate(__DIR__ . '/next_song.php', true);
-        @opcache_invalidate(__DIR__ . '/autodj_debug.php', true);
     }
     clearstatcache(true);
     // ===== FIN OPCACHE INVALIDATE =====
@@ -733,30 +792,61 @@ function start_autodj($data_file, $default_data, $base_dir, $radio, $mount, $enc
         return ['pid' => null, 'running' => false, 'info' => $info];
     }
 
-    if (file_exists($pid_file)) {
-        $old_pid = (int)trim(@file_get_contents($pid_file));
-        if ($old_pid > 1) {
-            @exec("kill -9 {$old_pid} 2>/dev/null");
-            @unlink($pid_file);
-            usleep(150000);
-        }
-    }
-
     $old_sock = "{$base_dir}/liq.sock";
     @unlink($old_sock);
 
     $stdout_file = "{$base_dir}/liquidsoap_stdout.log";
     $stderr_file = "{$base_dir}/liquidsoap_stderr.log";
-    $cmd = sprintf(
-        "TZ=%s %s %s >%s 2>%s & echo $!",
-        escapeshellarg($tz),
-        escapeshellcmd($liq_bin),
-        escapeshellarg($liq_file),
-        escapeshellarg($stdout_file),
-        escapeshellarg($stderr_file)
-    );
-    exec($cmd, $out, $exit_code);
-    $pid = !empty($out[0]) ? (int)$out[0] : null;
+
+    $pid = null;
+    if (autodj_systemd_available()) {
+        // TZ de la emisora para la unidad (EnvironmentFile=autodj.env)
+        @file_put_contents("{$base_dir}/autodj.env", "TZ=" . $tz . "\n");
+        @chmod("{$base_dir}/autodj.env", 0664);
+        $unit = autodj_unit_name($mount);
+        $sd_out = [];
+        $sd_rc = 0;
+        @exec('/usr/bin/systemctl restart ' . escapeshellcmd($unit) . ' 2>&1', $sd_out, $sd_rc);
+        // Marca de "debe estar al aire": la usa el watchdog para arrancarla tras
+        // un reboot o si la unidad se cayó (no usamos systemctl enable por polkit).
+        @file_put_contents("{$base_dir}/.autodj_enabled", date('c') . "\n");
+        @chmod("{$base_dir}/.autodj_enabled", 0664);
+        $exit_code = $sd_rc;
+        $out = $sd_out;
+        $info['autodj_backend'] = 'systemd';
+        $info['systemd_unit'] = $unit;
+        $info['systemd_rc'] = $sd_rc;
+        $info['systemd_out'] = $sd_out;
+        usleep(700000);
+        $pid = autodj_systemd_mainpid($unit);
+        if ($pid <= 0) {
+            // La unidad no arrancó → fallback al método clásico
+            $info['systemd_fallback'] = true;
+            autodj_kill_stale_pid($pid_file);
+            $cmd = sprintf(
+                "TZ=%s %s %s >%s 2>%s & echo $!",
+                escapeshellarg($tz),
+                escapeshellcmd($liq_bin),
+                escapeshellarg($liq_file),
+                escapeshellarg($stdout_file),
+                escapeshellarg($stderr_file)
+            );
+            exec($cmd, $out, $exit_code);
+            $pid = !empty($out[0]) ? (int)$out[0] : null;
+        }
+    } else {
+        autodj_kill_stale_pid($pid_file);
+        $cmd = sprintf(
+            "TZ=%s %s %s >%s 2>%s & echo $!",
+            escapeshellarg($tz),
+            escapeshellcmd($liq_bin),
+            escapeshellarg($liq_file),
+            escapeshellarg($stdout_file),
+            escapeshellarg($stderr_file)
+        );
+        exec($cmd, $out, $exit_code);
+        $pid = !empty($out[0]) ? (int)$out[0] : null;
+    }
     if ($pid) @file_put_contents($pid_file, (string)$pid);
 
     usleep(800000);
@@ -779,6 +869,22 @@ function start_autodj($data_file, $default_data, $base_dir, $radio, $mount, $enc
 
 function stop_autodj($pid_file) {
     $info = ['killed' => false, 'old_pid' => null];
+
+    // Si la radio corre como unidad systemd, pararla por unidad (y deshabilitarla
+    // para que no vuelva a arrancar sola tras un reboot).
+    if (autodj_systemd_available()) {
+        $unit = autodj_unit_name(basename(dirname($pid_file)));
+        if ($unit !== '') {
+            $state = trim((string)@shell_exec('/usr/bin/systemctl is-active ' . escapeshellcmd($unit) . ' 2>/dev/null'));
+            if ($state === 'active' || $state === 'activating') {
+                @exec('/usr/bin/systemctl stop ' . escapeshellcmd($unit) . ' 2>&1');
+                @unlink(dirname($pid_file) . '/.autodj_enabled');
+                @unlink($pid_file);
+                return ['killed' => true, 'old_pid' => null, 'method' => 'systemd', 'unit' => $unit];
+            }
+        }
+    }
+
     if (file_exists($pid_file)) {
         $old_pid = (int)trim(@file_get_contents($pid_file));
         $info['old_pid'] = $old_pid;
@@ -943,103 +1049,9 @@ function playlist_reload_all($sock_path) {
 }
 
 // ---------- HELPERS DE ALMACENAMIENTO / CUOTA DE DISCO ----------
-// Formatea bytes a unidades legibles (KB/MB/GB/TB) con 2 decimales
-if (!function_exists('storage_format_bytes')) {
-function storage_format_bytes($bytes, $precision = 2) {
-    $bytes = (float)$bytes;
-    if ($bytes <= 0) return '0 B';
-    $units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-    $pow = (int)floor(log($bytes, 1024));
-    if ($pow >= count($units)) $pow = count($units) - 1;
-    $val = $bytes / pow(1024, $pow);
-    return number_format($val, $precision, '.', ',') . ' ' . $units[$pow];
-}
-}
-
-// Calcula el espacio usado por un directorio de forma recursiva, con caché en disco
-// TTL por defecto 120s para no martillear el HDD del VPS cada load_all
-if (!function_exists('storage_dir_used_cached')) {
-function storage_dir_used_cached($base_dir, $cache_path, $ttl_seconds = 120) {
-    $cache_path = (string)$cache_path;
-    $base_dir = rtrim((string)$base_dir, '/\\');
-    if ($base_dir === '' || !is_dir($base_dir)) return 0.0;
-
-    // 1) Intentar caché válido
-    if ($cache_path !== '') {
-        $cache_dir = dirname($cache_path);
-        if (!is_dir($cache_dir)) {
-            @mkdir($cache_dir, 0775, true);
-            @chmod($cache_dir, 0775);
-            if (function_exists('chown')) {
-                $owner = @get_current_user();
-                if ($owner && $owner !== '') @chown($cache_dir, $owner);
-            }
-        }
-        if (is_dir($cache_dir) && is_file($cache_path)) {
-            $age = time() - @filemtime($cache_path);
-            if ($age >= 0 && $age <= $ttl_seconds) {
-                $raw = @file_get_contents($cache_path);
-                if ($raw !== false && $raw !== '') {
-                    $arr = @json_decode($raw, true);
-                    if (is_array($arr) && isset($arr['used_bytes'])) {
-                        return (float)$arr['used_bytes'];
-                    }
-                }
-            }
-        }
-    }
-
-    // 2) Calcular a mano de forma segura
-    $total = 0.0;
-    try {
-        $it = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($base_dir, RecursiveDirectoryIterator::SKIP_DOTS
-                | RecursiveDirectoryIterator::CURRENT_AS_FILEINFO
-                | RecursiveDirectoryIterator::KEY_AS_PATHNAME),
-            RecursiveIteratorIterator::SELF_FIRST,
-            RecursiveIteratorIterator::CATCH_GET_CHILD
-        );
-        foreach ($it as $path => $fi) {
-            if ($fi === null) continue;
-            if ($fi->isFile()) {
-                $s = @$fi->getSize();
-                if ($s !== false && $s >= 0) $total += (float)$s;
-            }
-        }
-    } catch (\Throwable $e) {
-        try {
-            // Fallback: escaneo simple de 1 nivel
-            foreach ((@scandir($base_dir) ?: []) as $it2) {
-                if ($it2 === '.' || $it2 === '..') continue;
-                $p = $base_dir . '/' . $it2;
-                if (is_file($p)) {
-                    $s = @filesize($p);
-                    if ($s !== false && $s >= 0) $total += (float)$s;
-                }
-            }
-        } catch (\Throwable $e2) { $total = 0.0; }
-    }
-
-    // 3) Guardar caché
-    if ($cache_path !== '' && $total > 0) {
-        $cache_dir = dirname($cache_path);
-        if (!is_dir($cache_dir)) {
-            @mkdir($cache_dir, 0775, true);
-            @chmod($cache_dir, 0775);
-        }
-        if (is_dir($cache_dir)) {
-            @file_put_contents($cache_path, json_encode([
-                'used_bytes' => $total,
-                'computed_at' => date('Y-m-d H:i:s'),
-                'base_dir' => $base_dir,
-            ], JSON_UNESCAPED_UNICODE));
-            @chmod($cache_path, 0664);
-        }
-    }
-
-    return $total;
-}
-}
+// storage_format_bytes() + storage_dir_used_cached() viven en lib_storage.php
+// (compartidos con superradio.php para no duplicar el escáner con caché).
+require_once __DIR__ . '/lib_storage.php';
 
 // Arma el objeto $storage completo usado por los widgets Inicio + Musicateca
 if (!function_exists('storage_assemble')) {
@@ -1113,10 +1125,11 @@ if ($action === 'load_all') {
     // Ignorar estas carpetas del listado de Musicateca, pero si existen físicamente
     // sí las usamos para resolver rutas en playlists de tipo "carpetas" / anuncios.
     //   - .nextsong_state : carpeta INTERNA de estado de next_song.php (histórico, modo inmediato, etc.)
-    //   - HORAS           : locuciones de la hora (usada por time_voice)
     //   - spod            : sistema de SPots de anuncio programado
     //   - Mantenimientos  : jingles / mantenimiento locutado administrador
-    $carpetas_ignorar_musicateca = ['.nextsong_state', 'HORAS', 'spod', 'Mantenimientos'];
+    //     OJO: HORAS (locuciones de la hora) NO se ignora: debe verse en la Musicateca
+    //     para subir ahí los clips HRS<HH>.mp3 / MIN<MM>.mp3 del item "HORA".
+    $carpetas_ignorar_musicateca = ['.nextsong_state', 'spod', 'Mantenimientos'];
 
     // Diccionario nombre_normalizado => nombre_físico_real (para resolver cualquier desalineación)
     $normalize_map = [];
@@ -1350,7 +1363,21 @@ if ($action === 'load_all') {
     if (!isset($app_data['ads']) || !is_array($app_data['ads'])) $app_data['ads'] = [];
     if (!isset($app_data['timezone'])) $app_data['timezone'] = 'America/Costa_Rica';
     if (!isset($app_data['default_playlist'])) $app_data['default_playlist'] = 'general';
-    if (!isset($app_data['time_voice']) || !is_array($app_data['time_voice'])) $app_data['time_voice'] = ['enabled' => false, 'folder' => ''];
+    // Carpeta de los clips de la hora (default fijo HORAS) — la usa el item "@HORA@".
+    if (!isset($app_data['hora_folder']) || !is_string($app_data['hora_folder'])) $app_data['hora_folder'] = 'HORAS';
+    $app_data['hora_folder'] = trim($app_data['hora_folder']);
+    if ($app_data['hora_folder'] === '' || strpos($app_data['hora_folder'], '..') !== false) $app_data['hora_folder'] = 'HORAS';
+    unset($app_data['time_voice']);   // clave heredada de la voz de hora automática (retirada)
+    // Carpetas con nombre oculto en el reproductor: solo nombres, sin rutas.
+    if (!isset($app_data['hide_title_folders']) || !is_array($app_data['hide_title_folders'])) $app_data['hide_title_folders'] = [];
+    $_hide_names = [];
+    foreach ($app_data['hide_title_folders'] as $_hname) {
+        if (!is_string($_hname)) continue;
+        $_hname = trim($_hname);
+        if ($_hname === '' || strpos($_hname, '/') !== false || strpos($_hname, '\\') !== false || strpos($_hname, '..') !== false) continue;
+        $_hide_names[$_hname] = true;
+    }
+    $app_data['hide_title_folders'] = array_keys($_hide_names);
     if (!isset($app_data['intercalators']) || !is_array($app_data['intercalators'])) $app_data['intercalators'] = [];
     $_sanitized_intercalators = [];
     foreach ($app_data['intercalators'] as $_int) {
@@ -1375,10 +1402,16 @@ if ($action === 'load_all') {
         ];
     }
     $app_data['intercalators'] = $_sanitized_intercalators;
-    // Corregir time_voice.folder si la carpeta física real se llama distinta
-    if (!empty($app_data['time_voice']['folder'])) {
-        $app_data['time_voice']['folder'] = $resolve_folder($app_data['time_voice']['folder']);
+    // Corregir hora_folder si la carpeta física real se llama distinta
+    if (!empty($app_data['hora_folder'])) {
+        $app_data['hora_folder'] = $resolve_folder($app_data['hora_folder']);
     }
+    // Crossfade entre pistas: defaults + saneo (segundos, 0 en ambos = desactivado)
+    if (!isset($app_data['crossfade']) || !is_array($app_data['crossfade'])) $app_data['crossfade'] = ['fade_in' => 0, 'fade_out' => 0];
+    $app_data['crossfade'] = [
+        'fade_in'  => round(max(0, min(5.0, (float)($app_data['crossfade']['fade_in']  ?? 0))) * 2) / 2,
+        'fade_out' => round(max(0, min(5.0, (float)($app_data['crossfade']['fade_out'] ?? 0))) * 2) / 2,
+    ];
 
     // =========================================================
     // PASO 3: Persistir cache de duraciones si fue modificada
@@ -1541,13 +1574,12 @@ if ($action === 'delete_folder') {
         } elseif ($es_reservada) {
             $resp['error'] = "La carpeta {$realName} es del sistema y no se puede borrar desde la Musicateca.";
         } else {
-            // Proteger carpetas en uso por el sistema (voz de hora / intercaladores)
+            // Proteger carpetas en uso por el sistema (clips de hora / intercaladores)
             $cfg_media = file_exists($data_file) ? (json_decode(@file_get_contents($data_file), true) ?: []) : [];
             $uso = '';
-            if (!empty($cfg_media['time_voice']['enabled'])) {
-                $tvFolder = trim((string)($cfg_media['time_voice']['folder'] ?? ''));
-                if ($tvFolder !== '' && normalize_name($tvFolder) === normalize_name($realName)) $uso = 'voz de hora';
-            }
+            $horaFolder = trim((string)($cfg_media['hora_folder'] ?? ''));
+            if ($horaFolder === '') $horaFolder = 'HORAS';
+            if (normalize_name($horaFolder) === normalize_name($realName)) $uso = 'los clips de la hora';
             if ($uso === '') {
                 foreach (($cfg_media['intercalators'] ?? []) as $int) {
                     if (!is_array($int)) continue;
@@ -1829,11 +1861,21 @@ if ($action === 'save_data') {
         }
         $current_saved['ads'] = $_ads;
     }
-    if (isset($raw['time_voice']) && is_array($raw['time_voice'])) {
-        $current_saved['time_voice'] = [
-            'enabled' => !empty($raw['time_voice']['enabled']),
-            'folder'  => trim((string)($raw['time_voice']['folder'] ?? '')),
-        ];
+    if (isset($raw['hora_folder']) && is_string($raw['hora_folder'])) {
+        $horaFolder = trim($raw['hora_folder']);
+        if ($horaFolder === '' || strpos($horaFolder, '..') !== false) $horaFolder = 'HORAS';
+        $current_saved['hora_folder'] = $horaFolder;
+    }
+    unset($current_saved['time_voice']);   // clave heredada de la voz de hora automática (retirada)
+    if (isset($raw['hide_title_folders']) && is_array($raw['hide_title_folders'])) {
+        $_hide_names = [];
+        foreach ($raw['hide_title_folders'] as $_hname) {
+            if (!is_string($_hname)) continue;
+            $_hname = trim($_hname);
+            if ($_hname === '' || strpos($_hname, '/') !== false || strpos($_hname, '\\') !== false || strpos($_hname, '..') !== false) continue;
+            $_hide_names[$_hname] = true;
+        }
+        $current_saved['hide_title_folders'] = array_keys($_hide_names);
     }
     if (isset($raw['intercalators']) && is_array($raw['intercalators'])) {
         $_ints = [];
@@ -1858,6 +1900,13 @@ if ($action === 'save_data') {
             ];
         }
         $current_saved['intercalators'] = $_ints;
+    }
+    if (isset($raw['crossfade']) && is_array($raw['crossfade'])) {
+        // Crossfade entre pistas: segundos de fade-in/fade-out (0 en ambos = desactivado).
+        $current_saved['crossfade'] = [
+            'fade_in'  => round(max(0, min(5.0, (float)($raw['crossfade']['fade_in']  ?? 0))) * 2) / 2,
+            'fade_out' => round(max(0, min(5.0, (float)($raw['crossfade']['fade_out'] ?? 0))) * 2) / 2,
+        ];
     }
 
     $write_ok = @file_put_contents($data_file, json_encode($current_saved, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
@@ -2191,6 +2240,28 @@ if ($action === 'status') {
     exit;
 }
 
+if ($action === 'get_listener_stats') {
+    // Estadísticas de oyentes de esta radio (países / dispositivos / conexiones por período).
+    // Se ingieren los access logs de nginx (máx. 1 vez por minuto) y se devuelve el payload.
+    require_once __DIR__ . '/estadisticas_lib.php';
+    if (!function_exists('est_periods_payload')) {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['success' => false, 'error' => 'Librería de estadísticas no disponible']);
+        exit;
+    }
+    $st_ing = ['ok' => false, 'error' => 'no ingest'];
+    $stf = est_state_path();
+    if (!is_file($stf) || (time() - (int)@filemtime($stf)) > 60) {
+        try { $st_ing = est_ingest_run(); } catch (\Throwable $e) { $st_ing = ['ok' => false, 'error' => $e->getMessage()]; }
+    }
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(array_merge(
+        ['success' => true, 'ingested' => $st_ing],
+        est_periods_payload($mount)
+    ), JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 if ($action === 'stop') {
     $stop = stop_autodj($pid_file);
     usleep(200000);
@@ -2262,6 +2333,8 @@ function api_pg_default_config() {
         'history_count'      => 7,         // Nº canciones en historial player público (5/7/10/15/20)
         'show_share'         => true,
         'show_logo_when_cover' => false,   // si true, muestra logo SIEMPRE; si false, reemplaza logo por cover
+        'show_staff'         => true,      // mostrar sección Staff en la página pública
+        'show_programacion'  => true,      // mostrar sección Programación en la página pública
         // ====== NUEVOS COLORES: ======
         'bg_color_base'       => '#0b1226', // color base fondo (se ve si NO hay imagen de fondo subida, capa base)
         'header_bg_color'    => '#111a2e', // color fondo cabecera (barra superior logo+redes)
@@ -2274,6 +2347,67 @@ function api_pg_default_config() {
         'website_url'        => '',
         'facebook_url'       => '',
         'whatsapp_url'       => '',
+        'share_url'          => '',   // URL que comparte el botón "Compartir" (vacío = la de por defecto)
+        // ====== CAMPOS LANDING (contacto / nosotros / más redes): ======
+        'email_contacto'     => '',
+        'nosotros'           => '',
+        'nosotros_html'      => false,
+        // ====== TÉRMINOS Y CONDICIONES (página propia del menú del pie): ======
+        'terminos'           => '',
+        'terminos_html'      => false,
+        // ====== COLORES DE TEXTO POR ZONA (vacío = default del tema): ======
+        'header_text_color'  => '',
+        'header_icon_color'  => '',
+        'footer_text_color'  => '',
+        'app_text_color'     => '',
+        'app_title_color'    => '',
+        'app_subtitle_color' => '',
+        'c_label_color'      => '',
+        'station_name_color' => '',
+        'song_title_color'   => '',
+        'player_btn_color'   => '',   // botón Play/Pausa (vacío = color acento)
+        'player_vol_color'   => '',   // barra de volumen (vacío = color acento)
+        'store_btn_bg'       => '',   // fondo de botones App Store / Google Play
+        'store_btn_text'     => '',   // letras de los botones de app
+        'store_btn_icon'     => '',   // iconos de los botones de app
+        'wa_btn_bg'          => '',   // fondo del botón WhatsApp
+        'wa_btn_text'        => '',   // letras del botón WhatsApp
+        'clock_time_color'   => '',   // letra de la hora del reloj (vacío = #ffffff)
+        'clock_date_color'   => '',   // letra de la fecha (vacío = #94a3b8)
+        'instagram_url'      => '',
+        'tiktok_url'         => '',
+        'youtube_url'        => '',
+        'x_url'              => '',
+        // ====== DESCARGA DE LA APP (tiendas): ======
+        'appstore_url'       => '',
+        'playstore_url'      => '',
+        // ====== STAFF (equipo) y PROGRAMACIÓN semanal (LUN..DOM) de la landing: ======
+        'staff'              => [],
+        'programacion'       => [],
+        // ====== SECCIONES VINCULADAS (patrocinadores / radios / escuchanos): ======
+        'show_patrocinadores'=> false,
+        'patrocinadores'     => [],
+        'show_radios'        => false,
+        'radios'             => [],
+        'show_escuchanos'    => false,
+        'escuchanos'         => [],
+        // ====== PERSONALIZACIÓN POR SECCIÓN (vacío = color actual de la plantilla) ======
+        'sec_staff_bg'          => '', 'sec_staff_title'          => '', 'sec_staff_icon'          => true,
+        'sec_staff_card_bg'     => '', 'sec_staff_card_border'    => '', 'sec_staff_card_text'     => '', 'sec_staff_role' => '',
+        'sec_programacion_bg'   => '', 'sec_programacion_title'   => '', 'sec_programacion_icon'   => true,
+        'sec_programacion_card_bg'  => '', 'sec_programacion_card_border' => '', 'sec_programacion_card_text' => '',
+        'sec_patrocinadores_bg' => '', 'sec_patrocinadores_title' => '', 'sec_patrocinadores_icon' => true,
+        'sec_patrocinadores_card_bg'  => '', 'sec_patrocinadores_card_border' => '', 'sec_patrocinadores_card_text' => '',
+        'sec_radios_bg'         => '', 'sec_radios_title'         => '', 'sec_radios_icon'         => true,
+        'sec_radios_card_bg'    => '', 'sec_radios_card_border'   => '', 'sec_radios_card_text'    => '',
+        'sec_escuchanos_bg'     => '', 'sec_escuchanos_title'     => '', 'sec_escuchanos_icon'     => true,
+        'sec_escuchanos_card_bg'    => '', 'sec_escuchanos_card_border' => '', 'sec_escuchanos_card_text' => '',
+        // Opacidades del fondo de sección y de cards (5..100 %)
+        'sec_staff_bg_opacity'          => 60,  'sec_staff_card_bg_opacity'          => 100,
+        'sec_programacion_bg_opacity'   => 55,  'sec_programacion_card_bg_opacity'   => 100,
+        'sec_patrocinadores_bg_opacity' => 55,  'sec_patrocinadores_card_bg_opacity' => 100,
+        'sec_radios_bg_opacity'         => 55,  'sec_radios_card_bg_opacity'         => 100,
+        'sec_escuchanos_bg_opacity'     => 50,  'sec_escuchanos_card_bg_opacity'     => 100,
         'meta'               => ['created_at' => null, 'updated_at' => null],
     ];
 }
@@ -2307,6 +2441,157 @@ function api_pg_bg_url($mount, $base_dir, $absolute=false) {
     if ($absolute) return api_np_to_absolute_url($rel);
     return $rel;
 }
+
+// ======================================================================
+// STAFF + PROGRAMACIÓN semanal (landing) — saneo y helpers
+// ======================================================================
+/** Texto plano de una línea (sin HTML): control chars + \r\n → espacio, colapsa espacios, trunca. */
+function api_pg_clean_text($v, $max) {
+    $v = (string)$v;
+    $v = (string)preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\r\n]+/u', ' ', $v);
+    $v = trim((string)preg_replace('/\s+/u', ' ', $v));
+    if (function_exists('mb_strlen')) { if (mb_strlen($v, 'UTF-8') > $max) $v = mb_substr($v, 0, $max, 'UTF-8'); }
+    elseif (strlen($v) > $max) { $v = substr($v, 0, $max); }
+    return $v;
+}
+function api_pg_valid_hhmm($s) {
+    return is_string($s) && preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/', $s) === 1;
+}
+/** Sanea el array staff (máx 12). Reemplazo total: la fuente de verdad es el editor. */
+function api_pg_sanitize_staff($arr) {
+    $out = [];
+    if (!is_array($arr)) return $out;
+    foreach (array_slice($arr, 0, 12) as $m) {
+        if (!is_array($m)) continue;
+        $nombre = api_pg_clean_text($m['nombre'] ?? '', 80);
+        $cargo  = api_pg_clean_text($m['cargo']  ?? '', 60);
+        $desc   = api_pg_clean_text($m['desc']   ?? '', 200);
+        $id     = preg_match('/^[A-Za-z0-9]{6,32}$/', (string)($m['id'] ?? '')) ? (string)$m['id'] : '';
+        $foto   = ($id !== '' && (string)($m['foto'] ?? '') === $id . '.jpg') ? $id . '.jpg' : '';
+        if ($nombre === '' && $cargo === '' && $desc === '' && $foto === '') continue; // fila vacía
+        $out[] = ['id' => $id, 'foto' => $foto, 'nombre' => $nombre, 'cargo' => $cargo, 'desc' => $desc];
+    }
+    return $out;
+}
+/**
+ * Sanea la lista de programas semanales. Cada programa = {dias:[1..7] LUN..DOM,
+ * inicio, fin (HH:MM con fin>inicio), titulo (req), conductor}. Acepta el formato
+ * legacy {dia:n} (→ dias:[n]) y {desc} (→ conductor). Máx 60 programas.
+ * Ordena por (primer día, inicio).
+ */
+function api_pg_sanitize_programacion($arr) {
+    $out = [];
+    if (!is_array($arr)) return $out;
+    foreach (array_slice($arr, 0, 60) as $b) {
+        if (!is_array($b)) continue;
+        $dias = [];
+        if (isset($b['dias']) && is_array($b['dias'])) {
+            foreach ($b['dias'] as $dd) {
+                $n = (int)$dd;
+                if ($n >= 1 && $n <= 7 && !in_array($n, $dias, true)) $dias[] = $n;
+            }
+        } elseif (isset($b['dia'])) {
+            $n = (int)$b['dia'];
+            if ($n >= 1 && $n <= 7) $dias = [$n];
+        }
+        if (!$dias) continue;
+        sort($dias);
+        $ini = trim((string)($b['inicio'] ?? ''));
+        $fin = trim((string)($b['fin'] ?? ''));
+        if (!api_pg_valid_hhmm($ini) || !api_pg_valid_hhmm($fin)) continue;
+        if ($fin <= $ini) continue;
+        $titulo = api_pg_clean_text($b['titulo'] ?? '', 90);
+        $conductor = api_pg_clean_text($b['conductor'] ?? ($b['desc'] ?? ''), 160);
+        if ($titulo === '') continue; // el título es obligatorio (el conductor es opcional)
+        $out[] = ['dias' => $dias, 'inicio' => $ini, 'fin' => $fin, 'titulo' => $titulo, 'conductor' => $conductor];
+    }
+    usort($out, function ($a, $b) {
+        $ad = $a['dias'][0] ?? 8; $bd = $b['dias'][0] ?? 8;
+        return [$ad, $a['inicio']] <=> [$bd, $b['inicio']];
+    });
+    return $out;
+}
+/**
+ * Sanea listas de enlaces con logo (patrocinadores / radios / escuchanos).
+ * Cada item = {id, logo ''|<id>.jpg, nombre≤120, link URL https}. Máx 20 por lista.
+ */
+function api_pg_sanitize_links($arr) {
+    $out = [];
+    if (!is_array($arr)) return $out;
+    foreach (array_slice($arr, 0, 20) as $it) {
+        if (!is_array($it)) continue;
+        $id = preg_match('/^[A-Za-z0-9]{6,32}$/', (string)($it['id'] ?? '')) ? (string)$it['id'] : '';
+        $logo = ($id !== '' && (string)($it['logo'] ?? '') === $id . '.jpg') ? $id . '.jpg' : '';
+        $nombre = api_pg_clean_text($it['nombre'] ?? '', 120);
+        $link = trim((string)($it['link'] ?? ''));
+        if ($link !== '') {
+            if (stripos($link, 'http://') !== 0 && stripos($link, 'https://') !== 0) $link = 'https://' . $link;
+            $hp = @parse_url($link);
+            if (!$hp || empty($hp['host'])) $link = '';
+        }
+        $link = api_pg_clean_text($link, 500);
+        if ($nombre === '') continue; // nombre y enlace obligatorios si el elemento existe
+        if ($link === '') continue;
+        $out[] = ['id' => $id, 'logo' => $logo, 'nombre' => $nombre, 'link' => $link];
+    }
+    return $out;
+}
+/** Decora listas de enlaces con logo_set/logo_url por item (para el editor). */
+function api_pg_decorate_links($cfg, $mount, $base_dir) {
+    foreach (['patrocinadores', 'radios', 'escuchanos'] as $key) {
+        if (!is_array($cfg[$key] ?? null)) continue;
+        foreach ($cfg[$key] as $i => $it) {
+            $abs = api_pg_staff_photo_abs($base_dir, $it['id'] ?? '');
+            $set = ($abs !== '' && is_file($abs));
+            $cfg[$key][$i]['logo_set'] = $set;
+            $cfg[$key][$i]['logo_url'] = $set ? api_pg_staff_photo_url($mount, $base_dir, $it['id'], true) : '';
+        }
+    }
+    return $cfg;
+}
+// --- Fotos de staff (ficheros <stateDir>/staff/<id>.jpg) ---
+function api_pg_staff_dir($base_dir) {
+    $d = api_np_state_dir($base_dir) . '/staff';
+    if (!is_dir($d)) { @mkdir($d, 0775, true); }
+    return $d;
+}
+function api_pg_staff_photo_abs($base_dir, $id) {
+    $id = preg_replace('/[^A-Za-z0-9]/', '', (string)$id);
+    return ($id === '') ? '' : api_pg_staff_dir($base_dir) . '/' . $id . '.jpg';
+}
+function api_pg_staff_photo_url($mount, $base_dir, $id, $absolute = false) {
+    $abs = api_pg_staff_photo_abs($base_dir, $id);
+    $qs  = (is_file($abs)) ? '&t=' . @filemtime($abs) : '';
+    $rel = 'autodj_api.php?action=serve_staff_photo&mount=' . rawurlencode($mount) . '&id=' . rawurlencode($id) . $qs;
+    return $absolute ? api_np_to_absolute_url($rel) : $rel;
+}
+/** Añade foto_set/foto_url por miembro (para el editor: previews). */
+function api_pg_decorate_staff($cfg, $mount, $base_dir) {
+    if (is_array($cfg['staff'] ?? null)) {
+        foreach ($cfg['staff'] as $i => $m) {
+            $abs = api_pg_staff_photo_abs($base_dir, $m['id'] ?? '');
+            $set = ($abs !== '' && is_file($abs));
+            $cfg['staff'][$i]['foto_set'] = $set;
+            $cfg['staff'][$i]['foto_url'] = $set ? api_pg_staff_photo_url($mount, $base_dir, $m['id'], true) : '';
+        }
+    }
+    return $cfg;
+}
+/** GC: borra jpg de staff/ no referenciados por el array staff guardado. */
+function api_pg_gc_staff_photos($base_dir, $staff) {
+    $dir = api_np_state_dir($base_dir) . '/staff';
+    if (!is_dir($dir)) return;
+    $ref = [];
+    if (is_array($staff)) {
+        foreach ($staff as $m) {
+            if (!empty($m['foto'])) $ref[$m['foto']] = true;
+        }
+    }
+    foreach (glob($dir . '/*.jpg') ?: [] as $f) {
+        if (!isset($ref[basename($f)])) { @unlink($f); }
+    }
+}
+
 function api_np_site_base() {
     static $cached = null;
     if ($cached !== null) return $cached;
@@ -2630,17 +2915,14 @@ function api_get_now_playing_payload($mount, $base_dir, $radio = null) {
         if ($icecast_songtitle !== '') $playing['icecast_songtitle'] = $icecast_songtitle;
     }
 
-    // =============================================================
-    // 🟢 DJ EN VIVO (conectado al harbor, modo autodj o directa):
-    //    lo que suena de verdad es la metadata que el DJ envía
-    //    (songtitle real de Icecast); el history del autodj queda
-    //    obsoleto mientras el DJ transmite.
-    // =============================================================
     $is_live = api_dj_is_live($mount, $radio);
     $liveCoverUrl = '';
-    if ($is_live) {
-        $liveTitle = trim((string)$icecast_songtitle);
-        if ($liveTitle !== '') {
+    $liveTitle = trim((string)$icecast_songtitle);
+    if ($liveTitle !== '') {
+        if ($is_live) {
+            // 🟢 DJ EN VIVO: lo que suena es la metadata del DJ (songtitle real
+            //    de Icecast); el history del autodj queda obsoleto mientras
+            //    transmite. Carátula vía iTunes siempre (el DJ no manda arte).
             $playing = [
                 'mount' => $mount,
                 'title' => $liveTitle,
@@ -2655,9 +2937,18 @@ function api_get_now_playing_payload($mount, $base_dir, $radio = null) {
                 'icecast_title_match' => true,
             ];
             $history = [];
-            // Carátula vía iTunes para la canción del DJ en vivo (cacheada por canción)
+            $needsStreamCover = true;
+        } else {
+            // 🤖 AUTODJ: misma vía que en vivo SOLO cuando la canción actual no
+            //    trae carátula real (incrustada en el MP3 o ya resuelta al
+            //    programarse). Así no pisamos arte correcto (p. ej. jingles).
+            $pcv = is_array($playing) ? trim((string)($playing['cover_url'] ?? '')) : '';
+            $needsStreamCover = ($pcv === '' || $pcv === $defUrl || stripos($pcv, 'serve_default_cover') !== false);
+        }
+        if ($needsStreamCover) {
+            // Carátula vía iTunes según el nombre real del stream (cacheada por canción)
             $liveCoverUrl = api_live_cover_for_title($mount, $base_dir, $liveTitle);
-            if ($liveCoverUrl !== '') $playing['cover_url'] = $liveCoverUrl;
+            if ($liveCoverUrl !== '' && is_array($playing)) $playing['cover_url'] = $liveCoverUrl;
         }
     }
 
@@ -2765,12 +3056,11 @@ function api_get_stats_payload($mount, $base_dir, $radio = null) {
         if ($songtitle === '' && !empty($cur['artist'])) $songtitle = trim((string)$cur['artist']).' - '.trim((string)$cur['title']);
     }
     if ($songtitle === '') { $songtitle = (string)($ice_mount['songtitle'] ?? ''); }
-    // Cuando hay DJ en vivo el título REAL es el que el DJ envía por
-    // metadata (lo que Icecast está transmitiendo), no el estado del autodj.
-    if ($is_live) {
-        $liveTitle = trim((string)($ice_mount['songtitle'] ?? ''));
-        if ($liveTitle !== '') $songtitle = $liveTitle;
-    }
+    // El título REAL es siempre el que Icecast transmite por metadata
+    // (AutoDJ envía "artist - title" desde el nombre del archivo; el DJ en
+    // vivo envía su propia metadata). En ambos modos ese es lo que suena.
+    $liveTitle = trim((string)($ice_mount['songtitle'] ?? ''));
+    if ($liveTitle !== '') $songtitle = $liveTitle;
     $streampath = '/'.ltrim((string)($ice_mount['streampath'] ?? '/'.$mount), '/');
     $streamhits = (int)($ice_mount['streamhits'] ?? 0);
     $backupstatus = (int)($ice_mount['backupstatus'] ?? 0);
@@ -3084,6 +3374,31 @@ if ($action === 'serve_page_bg') {
     exit;
 }
 
+if ($action === 'serve_staff_photo') {
+    $id = (string)($_GET['id'] ?? '');
+    if (!preg_match('/^[A-Za-z0-9]{6,32}$/', $id)) { http_response_code(400); exit; }
+    $abs = api_pg_staff_photo_abs($base_dir, $id);
+    if ($abs === '' || !is_file($abs)) { http_response_code(404); exit; }
+    header('Content-Type: image/jpeg');
+    header('Cache-Control: public, max-age=31536000, immutable');
+    readfile($abs);
+    exit;
+}
+
+/**
+ * Las escrituras de la página pública (guardar/subir/borrar) DEBEN identificar su radio
+ * con un mount válido. Sin esto, un request con mount perdido caía al fallback de
+ * sesión/radio #1 y podía escribir la config de UNA radio en la carpeta de OTRA.
+ */
+function sp_pg_exigir_mount($mount_param, $pg_mount_ok) {
+    if ($mount_param === '' || !$pg_mount_ok) {
+        header('Content-Type: application/json; charset=utf-8');
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'No se pudo identificar la radio (mount inválido). Recarga la página del panel.'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+}
+
 if ($action === 'get_page_config') {
     header('Content-Type: application/json; charset=utf-8');
     header('Access-Control-Allow-Origin: *');
@@ -3093,6 +3408,8 @@ if ($action === 'get_page_config') {
     $cfg['logo_set'] = is_file(api_pg_logo_abs($base_dir));
     $cfg['bg_url'] = api_pg_bg_url($mount, $base_dir, true);
     $cfg['bg_set'] = is_file(api_pg_bg_abs($base_dir));
+    $cfg = api_pg_decorate_staff($cfg, $mount, $base_dir);
+    $cfg = api_pg_decorate_links($cfg, $mount, $base_dir);
     $np = api_get_now_playing_payload($mount, $base_dir, $radio ?? null);
     $cfg['mount'] = $mount;
     $cfg['radio_name'] = ($radio && is_array($radio) && !empty($radio['nombre_emisora'])) ? (string)$radio['nombre_emisora'] : ucfirst($mount);
@@ -3111,17 +3428,25 @@ if ($action === 'save_page_config') {
         header('Content-Type: application/json; charset=utf-8'); http_response_code(401);
         echo json_encode(['success' => false, 'error' => 'No autorizado.'], JSON_UNESCAPED_UNICODE); exit;
     }
+    sp_pg_exigir_mount($mount_param, $pg_mount_ok);
     $raw = file_get_contents('php://input');
     $in = $raw ? @json_decode($raw, true) : [];
     if (!is_array($in)) $in = [];
     $defaults = api_pg_default_config();
     $saved = api_pg_read_config($base_dir);
+    $hexKeys = ['accent_color', 'primary_text_color', 'bg_color_base', 'header_bg_color', 'main_bg_color', 'footer_bg_color', 'header_text_color', 'header_icon_color', 'footer_text_color', 'app_text_color', 'app_title_color', 'app_subtitle_color', 'c_label_color', 'station_name_color', 'song_title_color',
+        // Personalización por sección (colores)
+        'sec_staff_bg', 'sec_staff_title', 'sec_staff_card_bg', 'sec_staff_card_border', 'sec_staff_card_text', 'sec_staff_role',
+        'sec_programacion_bg', 'sec_programacion_title', 'sec_programacion_card_bg', 'sec_programacion_card_border', 'sec_programacion_card_text',
+        'sec_patrocinadores_bg', 'sec_patrocinadores_title', 'sec_patrocinadores_card_bg', 'sec_patrocinadores_card_border', 'sec_patrocinadores_card_text',
+        'sec_radios_bg', 'sec_radios_title', 'sec_radios_card_bg', 'sec_radios_card_border', 'sec_radios_card_text',
+        'sec_escuchanos_bg', 'sec_escuchanos_title', 'sec_escuchanos_card_bg', 'sec_escuchanos_card_border', 'sec_escuchanos_card_text', 'player_btn_color', 'player_vol_color', 'store_btn_bg', 'store_btn_text', 'store_btn_icon', 'wa_btn_bg', 'wa_btn_text', 'clock_time_color', 'clock_date_color'];
     foreach ($defaults as $k => $def) {
         if ($k === 'meta') continue;
         if (array_key_exists($k, $in)) {
-            if ($k === 'title' || $k === 'subtitle' || $k === 'accent_color' || $k === 'primary_text_color' || $k === 'bg_color_base' || $k === 'header_bg_color' || $k === 'main_bg_color' || $k === 'footer_bg_color') {
+            if (in_array($k, $hexKeys, true) || $k === 'title' || $k === 'subtitle') {
                 $v = trim((string)$in[$k]);
-                if ($k === 'accent_color' || $k === 'primary_text_color' || $k === 'bg_color_base' || $k === 'header_bg_color' || $k === 'main_bg_color' || $k === 'footer_bg_color') {
+                if (in_array($k, $hexKeys, true)) {
                     if ($v !== '' && !preg_match('/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/', $v)) $v = $saved[$k];
                 }
                 $saved[$k] = ($v === '' && $k === 'title') ? null : $v;
@@ -3133,30 +3458,97 @@ if ($action === 'save_page_config') {
                 $n = (int)$in[$k];
                 if ($n < 5) $n = 5; if ($n > 100) $n = 100;
                 $saved[$k] = $n;
+            } elseif (str_ends_with($k, '_opacity')) {
+                // Opacidades por sección (sec_<seccion>_bg_opacity / _card_bg_opacity)
+                $n = (int)$in[$k];
+                if ($n < 5) $n = 5; if ($n > 100) $n = 100;
+                $saved[$k] = $n;
             } elseif ($k === 'history_count') {
                 $n = (int)$in[$k];
                 if ($n < 1) $n = 7; if ($n > 20) $n = 20;
                 $saved[$k] = $n;
-            } elseif ($k === 'show_history' || $k === 'show_share' || $k === 'show_logo_when_cover') {
+            } elseif ($k === 'show_history' || $k === 'show_share' || $k === 'show_logo_when_cover' || $k === 'nosotros_html' || $k === 'terminos_html' || $k === 'show_patrocinadores' || $k === 'show_radios' || $k === 'show_escuchanos' || $k === 'show_staff' || $k === 'show_programacion' || $k === 'sec_staff_icon' || $k === 'sec_programacion_icon' || $k === 'sec_patrocinadores_icon' || $k === 'sec_radios_icon' || $k === 'sec_escuchanos_icon') {
                 $saved[$k] = !empty($in[$k]);
-            } elseif ($k === 'website_url' || $k === 'facebook_url' || $k === 'whatsapp_url') {
+            } elseif ($k === 'website_url' || $k === 'facebook_url' || $k === 'whatsapp_url' || $k === 'share_url' || $k === 'instagram_url' || $k === 'tiktok_url' || $k === 'youtube_url' || $k === 'x_url' || $k === 'appstore_url' || $k === 'playstore_url') {
                 $v = trim((string)$in[$k]);
                 if ($v !== '') {
-                    if (stripos($v, 'http://') !== 0 && stripos($v, 'https://') !== 0 && stripos($v, 'wa.me/') !== 0 && stripos($v, 'api.whatsapp.com/') !== 0) {
-                        $v = 'https://' . $v;
-                    }
-                    if ($k === 'whatsapp_url') {
-                        if (preg_match('/^[0-9+\s()-]+$/', $v)) {
-                            $num = preg_replace('/\D+/','',$v);
-                            $v = 'https://wa.me/' . $num;
+                    if ($k === 'whatsapp_url' && preg_match('/^\+?[0-9][0-9\s()\-]*$/', $v)) {
+                        // Número suelto → enlace wa.me (se convierte ANTES de añadir esquema)
+                        $num = preg_replace('/\D+/', '', $v);
+                        $v = ($num !== '') ? 'https://wa.me/' . $num : '';
+                    } else {
+                        if (stripos($v, 'http://') !== 0 && stripos($v, 'https://') !== 0 && stripos($v, 'wa.me/') !== 0 && stripos($v, 'api.whatsapp.com/') !== 0) {
+                            $v = 'https://' . $v;
                         }
                     }
                     $hp = @parse_url($v);
                     if (!$hp || empty($hp['host'])) { $v = ''; }
                 }
                 $saved[$k] = $v;
+            } elseif ($k === 'email_contacto') {
+                $v = trim((string)$in[$k]);
+                if ($v !== '' && !filter_var($v, FILTER_VALIDATE_EMAIL)) { $v = ''; }
+                if (function_exists('mb_substr')) { if (mb_strlen($v) > 200) $v = mb_substr($v, 0, 200); }
+                elseif (strlen($v) > 200) { $v = substr($v, 0, 200); }
+                $saved[$k] = $v;
+            } elseif ($k === 'nosotros') {
+                $v = (string)$in[$k];
+                if (!empty($in['nosotros_html'])) {
+                    $v = rp_sanitize_rich_text($v);
+                } else {
+                    $v = (string)preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $v);
+                }
+                if (function_exists('mb_substr')) { if (mb_strlen($v) > 500) $v = mb_substr($v, 0, 500); }
+                elseif (strlen($v) > 500) { $v = substr($v, 0, 500); }
+                $saved[$k] = $v;
+            } elseif ($k === 'terminos') {
+                $v = (string)$in[$k];
+                if (!empty($in['terminos_html'])) {
+                    $v = rp_sanitize_rich_text($v);
+                } else {
+                    $v = (string)preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $v);
+                }
+                $max = 4000;
+                if (function_exists('mb_substr')) { if (mb_strlen($v, 'UTF-8') > $max) $v = mb_substr($v, 0, $max, 'UTF-8'); }
+                elseif (strlen($v) > $max) { $v = substr($v, 0, $max); }
+                $saved[$k] = $v;
+            } elseif ($k === 'staff') {
+                $saved['staff'] = api_pg_sanitize_staff($in[$k]);
+            } elseif ($k === 'programacion') {
+                $saved['programacion'] = api_pg_sanitize_programacion($in[$k]);
+            } elseif ($k === 'patrocinadores' || $k === 'radios' || $k === 'escuchanos') {
+                $saved[$k] = api_pg_sanitize_links($in[$k]);
             } else {
                 $saved[$k] = $in[$k];
+            }
+        }
+    }
+    // ==== Fotos de staff Y logos de secciones vinculadas: coherencia (referenciada sin fichero → '')
+    //     + GC de huérfanas. Se ejecuta solo si el payload trae alguna de esas claves. ====
+    $linkKeys = ['patrocinadores', 'radios', 'escuchanos'];
+    if (array_key_exists('staff', $in) || array_intersect($linkKeys, array_keys($in))) {
+        $ref = [];
+        foreach ($saved['staff'] as $m) { if (!empty($m['foto'])) $ref[$m['foto']] = true; }
+        foreach ($linkKeys as $lk) {
+            foreach (($saved[$lk] ?? []) as $it) { if (!empty($it['logo'])) $ref[$it['logo']] = true; }
+        }
+        foreach ($saved['staff'] as $i => $m) {
+            if (!empty($m['foto']) && !is_file(api_pg_staff_photo_abs($base_dir, $m['id']))) {
+                $saved['staff'][$i]['foto'] = '';
+            }
+        }
+        foreach ($linkKeys as $lk) {
+            foreach (($saved[$lk] ?? []) as $i => $it) {
+                if (!empty($it['logo']) && !is_file(api_pg_staff_photo_abs($base_dir, $it['id']))) {
+                    $saved[$lk][$i]['logo'] = '';
+                }
+            }
+        }
+        // Borra jpg de staff/ no referenciados por staff ni por los logos de secciones
+        $dir = api_np_state_dir($base_dir) . '/staff';
+        if (is_dir($dir)) {
+            foreach (glob($dir . '/*.jpg') ?: [] as $f) {
+                if (!isset($ref[basename($f)])) { @unlink($f); }
             }
         }
     }
@@ -3172,6 +3564,8 @@ if ($action === 'save_page_config') {
     $saved['logo_set'] = is_file(api_pg_logo_abs($base_dir));
     $saved['bg_url'] = api_pg_bg_url($mount, $base_dir, true);
     $saved['bg_set'] = is_file(api_pg_bg_abs($base_dir));
+    $saved = api_pg_decorate_staff($saved, $mount, $base_dir);
+    $saved = api_pg_decorate_links($saved, $mount, $base_dir);
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode(['success' => true, 'config' => $saved], JSON_UNESCAPED_UNICODE);
     exit;
@@ -3268,6 +3662,7 @@ if ($action === 'upload_page_logo') {
         header('Content-Type: application/json; charset=utf-8'); http_response_code(401);
         echo json_encode(['success' => false, 'error' => 'No autorizado.'], JSON_UNESCAPED_UNICODE); exit;
     }
+    sp_pg_exigir_mount($mount_param, $pg_mount_ok);
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode($__pg_upload('logo'), JSON_UNESCAPED_UNICODE); exit;
 }
@@ -3277,6 +3672,7 @@ if ($action === 'upload_page_bg') {
         header('Content-Type: application/json; charset=utf-8'); http_response_code(401);
         echo json_encode(['success' => false, 'error' => 'No autorizado.'], JSON_UNESCAPED_UNICODE); exit;
     }
+    sp_pg_exigir_mount($mount_param, $pg_mount_ok);
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode($__pg_upload('bg'), JSON_UNESCAPED_UNICODE); exit;
 }
@@ -3286,6 +3682,7 @@ if ($action === 'delete_page_logo' || $action === 'delete_page_bg') {
         header('Content-Type: application/json; charset=utf-8'); http_response_code(401);
         echo json_encode(['success' => false, 'error' => 'No autorizado.'], JSON_UNESCAPED_UNICODE); exit;
     }
+    sp_pg_exigir_mount($mount_param, $pg_mount_ok);
     $resp = ['success' => true, 'existed' => false];
     $abs = ($action === 'delete_page_logo') ? api_pg_logo_abs($base_dir) : api_pg_bg_abs($base_dir);
     if (is_file($abs)) { $resp['existed'] = true; @unlink($abs); }
@@ -3294,7 +3691,102 @@ if ($action === 'delete_page_logo' || $action === 'delete_page_bg') {
     header('Content-Type: application/json; charset=utf-8');
     echo json_encode($resp, JSON_UNESCAPED_UNICODE); exit;
 }
-unset($__pg_upload);
+$__pg_staff_upload = function () use ($base_dir, $mount) {
+    $resp = ['success' => false];
+    $id = (string)($_REQUEST['id'] ?? '');
+    if (!preg_match('/^[A-Za-z0-9]{6,32}$/', $id)) { $resp['error'] = 'ID inválido.'; return $resp; }
+    $f = $_FILES['foto'] ?? null;
+    if (!$f || !isset($f['error']) || $f['error'] !== UPLOAD_ERR_OK) {
+        $code = $f['error'] ?? UPLOAD_ERR_NO_FILE;
+        $map = [
+            UPLOAD_ERR_INI_SIZE => 'El archivo excede upload_max_filesize (php.ini).',
+            UPLOAD_ERR_FORM_SIZE => 'El archivo excede MAX_FILE_SIZE del formulario.',
+            UPLOAD_ERR_PARTIAL => 'Subida incompleta.',
+            UPLOAD_ERR_NO_FILE => 'No se seleccionó ningún archivo.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Falta carpeta tmp PHP.',
+            UPLOAD_ERR_CANT_WRITE => 'No se puede escribir en disco.',
+            UPLOAD_ERR_EXTENSION => 'Subida bloqueada por extensión PHP.',
+        ];
+        $resp['error'] = $map[$code] ?? 'Error desconocido al subir.';
+        return $resp;
+    }
+    $size = (int)($f['size'] ?? 0);
+    if ($size <= 0 || $size > 5 * 1024 * 1024) { $resp['error'] = 'Archivo demasiado grande. Máximo 5 MB.'; return $resp; }
+    $name = (string)($f['name'] ?? '');
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    if (!in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'webp'], true)) { $resp['error'] = 'Formato no permitido. Usa JPG, PNG, GIF o WEBP.'; return $resp; }
+    $tmp = $f['tmp_name'] ?? '';
+    if ($tmp === '' || !is_uploaded_file($tmp)) { $resp['error'] = 'No se recibió el archivo subido.'; return $resp; }
+    $finfo = function_exists('finfo_open') ? @finfo_open(FILEINFO_MIME_TYPE) : false;
+    if ($finfo) {
+        $mime = (string)@finfo_file($finfo, $tmp);
+        @finfo_close($finfo);
+        if (strpos($mime, 'image/') !== 0) { $resp['error'] = 'El archivo no es una imagen válida.'; return $resp; }
+    }
+    $targetAbs = api_pg_staff_photo_abs($base_dir, $id);
+    if ($targetAbs === '') { $resp['error'] = 'ID inválido.'; return $resp; }
+    $sizeMax = 600;
+    try {
+        if (function_exists('imagecreatefromstring')) {
+            $rawImg = @file_get_contents($tmp);
+            if ($rawImg !== false && strlen($rawImg) > 0) {
+                $srcImg = @imagecreatefromstring($rawImg);
+                if ($srcImg !== false) {
+                    $w = imagesx($srcImg); $h = imagesy($srcImg);
+                    if ($w > $sizeMax || $h > $sizeMax) {
+                        $ratio = min($sizeMax / $w, $sizeMax / $h);
+                        $nw = (int)round($w * $ratio); $nh = (int)round($h * $ratio);
+                        $dst = imagecreatetruecolor($nw, $nh);
+                        if ($dst !== false) {
+                            imagecopyresampled($dst, $srcImg, 0, 0, 0, 0, $nw, $nh, $w, $h);
+                            imagedestroy($srcImg); $srcImg = $dst;
+                        }
+                    }
+                    $ok = @imagejpeg($srcImg, $targetAbs, 88);
+                    imagedestroy($srcImg);
+                    if (!$ok) { goto stTryFallbackCopy; }
+                    goto stWriteOK;
+                }
+            }
+        }
+    } catch (\Throwable $e) {}
+    stTryFallbackCopy:
+    $ok = @move_uploaded_file($tmp, $targetAbs);
+    if (!$ok) { $resp['error'] = 'No se pudo guardar el archivo en disco (permisos?).'; return $resp; }
+    stWriteOK:
+    @chmod($targetAbs, 0664);
+    $resp['success'] = true;
+    $resp['id'] = $id;
+    $resp['filesize_kb'] = round((@filesize($targetAbs) ?: 0) / 1024, 1);
+    $resp['foto_url'] = api_pg_staff_photo_url($mount, $base_dir, $id, true);
+    return $resp;
+};
+
+if ($action === 'upload_staff_photo') {
+    if (empty($_SESSION['cliente_auth']) && empty($_SESSION['superadmin_auth'])) {
+        header('Content-Type: application/json; charset=utf-8'); http_response_code(401);
+        echo json_encode(['success' => false, 'error' => 'No autorizado.'], JSON_UNESCAPED_UNICODE); exit;
+    }
+    sp_pg_exigir_mount($mount_param, $pg_mount_ok);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($__pg_staff_upload(), JSON_UNESCAPED_UNICODE); exit;
+}
+
+if ($action === 'delete_staff_photo') {
+    if (empty($_SESSION['cliente_auth']) && empty($_SESSION['superadmin_auth'])) {
+        header('Content-Type: application/json; charset=utf-8'); http_response_code(401);
+        echo json_encode(['success' => false, 'error' => 'No autorizado.'], JSON_UNESCAPED_UNICODE); exit;
+    }
+    sp_pg_exigir_mount($mount_param, $pg_mount_ok);
+    $resp = ['success' => true, 'existed' => false];
+    $id = (string)($_REQUEST['id'] ?? '');
+    $abs = api_pg_staff_photo_abs($base_dir, $id);
+    if ($abs !== '' && is_file($abs)) { $resp['existed'] = true; @unlink($abs); }
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($resp, JSON_UNESCAPED_UNICODE); exit;
+}
+
+unset($__pg_upload, $__pg_staff_upload);
 
 header('Content-Type: application/json');
 echo json_encode(['success' => false, 'error' => 'Acción no reconocida']);

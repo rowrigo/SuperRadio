@@ -1,4 +1,5 @@
 :root {
+    color-scheme: dark;
     --bg-app: #080d1a;
     --bg-side: #080d1a;
     --bg-card: transparent;
@@ -49,6 +50,8 @@ h2, h3, h4 { color: #38bdf8; margin-top: 0; }
 .btn { background: var(--primary); color: #fff; border: none; padding: 10px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; }
 .btn-success { background: #166534; } .btn-danger { background: var(--danger); } .btn-sm { padding: 5px 10px; font-size: 0.8rem; }
 input, select { background: transparent; border: 1px solid var(--border); color: #fff; padding: 10px 14px; border-radius: 6px; }
+/* Lista desplegada de los <select>: fondo oscuro y letras blancas (sin esto el navegador la pinta en claro y el texto blanco se vuelve ilegible) */
+select option { background-color: #0b1220; color: #fff; }
 .list-row { background: transparent; padding: 10px 15px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
 
 /* GRID VIVO */
@@ -66,6 +69,24 @@ input, select { background: transparent; border: 1px solid var(--border); color:
 .file-row { padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; }
 .dropzone { border: 2px dashed #334155; border-radius: 8px; padding: 18px; text-align: center; background: transparent; margin-bottom: 15px; cursor: pointer; }
 .dropzone:hover { border-color: var(--primary); }
+
+/* ===== EDITOR DE PLAYLISTS: 2 columnas (izq = playlist en construcción · der = biblioteca) ===== */
+.playlist-editor-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+.pl-col-left { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.pl-add-bar { display: flex; flex-wrap: wrap; gap: 10px; }
+.pl-list { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; padding-right: 4px; }
+.pl-col-right { max-height: 560px; }
+.pl-browser-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 140px; }
+.pl-browser-item { padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 0.9rem; cursor: grab; }
+.pl-browser-item:hover { background: #152138; }
+.pl-browser-item.is-empty { opacity: 0.45; cursor: not-allowed; }
+.pl-browser-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.pl-browser-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.pl-anchor-hint { font-size: 0.78rem; color: var(--text-muted); display: flex; align-items: center; gap: 10px; }
+.draggable-row { display: flex; justify-content: space-between; align-items: center; background: #0b132b; padding: 10px 14px; border: 1px solid var(--border); border-radius: 6px; cursor: grab; transition: all 0.15s ease; }
+.draggable-row.dragging { opacity: 0.4; }
+.draggable-row.drop-target { border-top: 2px solid #38bdf8; }
+.draggable-row.is-anchor { border-left: 4px solid #4ade80; background: #0f2a1e; }
 
 /* ===== ESTÉTICA MINIMAL: esquinas rectas (SOLO cabina cliente .app-container) =====
    En la cabina del cliente todo va con bordes rectos; solo los botones de acción
@@ -104,4 +125,6 @@ input, select { background: transparent; border: 1px solid var(--border); color:
     .topbar { padding: 10px 14px; }
     .music-layout { grid-template-columns: 1fr; height: auto; }
     .music-panel { min-height: 260px; }
+    .playlist-editor-layout { grid-template-columns: 1fr; }
+    .pl-col-right { max-height: 320px; }
 }

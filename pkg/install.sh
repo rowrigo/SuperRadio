@@ -201,6 +201,22 @@ chown root:icecast /etc/icecast2/icecast.xml 2>/dev/null || chown root:root /etc
 chmod 0640 /etc/icecast2/icecast.xml
 if [ "$NO_RESTART" -eq 0 ]; then systemctl enable --now icecast2; fi
 
+# ---------- AutoDJ 24/7 como servicio systemd ----------
+# Liquidsoap corre como unidad radiopanel-autodj@<mount>, es decir FUERA del
+# cgroup de php-fpm, con Restart=always + watchdog cada 2 min. Sin esto, un
+# reinicio/actualizacion de php-fpm o de libc deja las emisoras caidas
+# (incidente real 11-sep-2026: unattended-upgrades actualizo libc6 y mato los
+# streams; estuvieron 13h 28m fuera de aire).
+log "Instalando servicio systemd del AutoDJ (radiopanel-autodj@)..."
+install -m 0644 "$TPL/radiopanel-autodj@.service"         /etc/systemd/system/radiopanel-autodj@.service
+install -m 0644 "$TPL/radiopanel-autodj-watchdog.service" /etc/systemd/system/radiopanel-autodj-watchdog.service
+install -m 0644 "$TPL/radiopanel-autodj-watchdog.timer"   /etc/systemd/system/radiopanel-autodj-watchdog.timer
+install -d -m 0755 /etc/polkit-1/rules.d
+install -m 0644 "$TPL/49-radiopanel-autodj.rules"         /etc/polkit-1/rules.d/49-radiopanel-autodj.rules
+install -m 0755 "$TPL/radiopanel-autodj-watchdog.sh"      /usr/local/bin/radiopanel-autodj-watchdog.sh
+systemctl daemon-reload
+if [ "$NO_RESTART" -eq 0 ]; then systemctl enable --now radiopanel-autodj-watchdog.timer; fi
+
 # ---------- SSL (certbot) ----------
 if [ "$NO_SSL" -eq 0 ] && command -v certbot >/dev/null 2>&1; then
   log "Emitiendo certificado Let's Encrypt para $DOMAIN (requiere que el DNS ya apunte)..."

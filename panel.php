@@ -87,26 +87,6 @@ $media_dir = "/var/media/radios/{$mount_clean}";
 </head>
 <body>
 
-<div class="app-container">
-    <div class="app-scrim" id="appScrim"></div>
-
-    <?php include __DIR__ . '/views/sidebar.php'; ?>
-
-    <main class="main-content">
-        <?php include __DIR__ . '/views/topbar.php'; ?>
-
-        <div class="content-area">
-            <?php include __DIR__ . '/views/view_live.php'; ?>
-            <?php include __DIR__ . '/views/view_musicateca.php'; ?>
-            <?php include __DIR__ . '/views/view_playlists.php'; ?>
-            <?php include __DIR__ . '/views/view_reloj.php'; ?>
-            <?php include __DIR__ . '/views/view_anuncios.php'; ?>
-            <?php include __DIR__ . '/views/view_ajustes.php'; ?>
-            <?php include __DIR__ . '/views/view_public_page.php'; ?>
-        </div>
-    </main>
-</div>
-
 <script>
     <?php
         function np_read_json($path){ if(!is_file($path)) return null; $j=@json_decode(@file_get_contents($path),true); return is_array($j)?$j:null; }
@@ -157,7 +137,7 @@ $media_dir = "/var/media/radios/{$mount_clean}";
         now_playing_initial: {
             mount: "<?= $mount_clean ?>",
             mode: "<?= $is_directa ? 'directa' : 'autodj' ?>",
-            stream_url: "/" . ltrim($mount_clean, "/"),
+            stream_url: <?= json_encode('/' . ltrim($mount_clean, '/')) ?>,
             default_cover_url: <?= json_encode($_np_def_cover) ?>,
             default_cover_set: <?= $_np_def_exists ? 'true' : 'false' ?>,
             current: <?= json_encode($_np_current, JSON_UNESCAPED_UNICODE) ?>,
@@ -165,6 +145,27 @@ $media_dir = "/var/media/radios/{$mount_clean}";
         }
     };
 </script>
+
+<div class="app-container">
+    <div class="app-scrim" id="appScrim"></div>
+
+    <?php include __DIR__ . '/views/sidebar.php'; ?>
+
+    <main class="main-content">
+        <?php include __DIR__ . '/views/topbar.php'; ?>
+
+        <div class="content-area">
+            <?php include __DIR__ . '/views/view_live.php'; ?>
+            <?php include __DIR__ . '/views/view_musicateca.php'; ?>
+            <?php include __DIR__ . '/views/view_playlists.php'; ?>
+            <?php include __DIR__ . '/views/view_reloj.php'; ?>
+            <?php include __DIR__ . '/views/view_anuncios.php'; ?>
+            <?php include __DIR__ . '/views/view_ajustes.php'; ?>
+            <?php include __DIR__ . '/views/view_public_page.php'; ?>
+            <?php include __DIR__ . '/views/view_estadisticas.php'; ?>
+        </div>
+    </main>
+</div>
 
 <!-- Módulos JavaScript -->
 <script src="assets/js/core.js?v=<?= time() ?>"></script>
@@ -175,6 +176,7 @@ $media_dir = "/var/media/radios/{$mount_clean}";
 <script src="assets/js/schedule.js?v=<?= time() ?>"></script>
 <script src="assets/js/anuncios.js?v=<?= time() ?>"></script>
 <script src="assets/js/ajustes.js?v=<?= time() ?>"></script>
+<script src="assets/js/estadisticas.js?v=<?= time() ?>"></script>
 
 <!-- Drawer móvil: hamburguesa + overlay -->
 <script>

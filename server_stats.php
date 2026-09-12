@@ -60,6 +60,30 @@ $db_file = DB_FILE;
 $db = file_exists($db_file) ? json_decode(file_get_contents($db_file), true) : ['radios' => []];
 $total_radios = count($db['radios'] ?? []);
 
+// 6. Almacenamiento: disco del servidor + cuota total asignada a las radios
+$disk_path = '/var/media/radios';
+if (!is_dir($disk_path)) $disk_path = '/';
+$disk_total = @disk_total_space($disk_path);
+$disk_free  = @disk_free_space($disk_path);
+$disk_used  = ($disk_total > 0 && $disk_free !== false) ? ($disk_total - $disk_free) : 0;
+$disk_percent = ($disk_total > 0) ? round(($disk_used / $disk_total) * 100) : 0;
+
+$fmt_bytes = function ($bytes) {
+    $bytes = (float)$bytes;
+    if ($bytes <= 0) return '0 B';
+    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    $i = (int)floor(log($bytes, 1024));
+    $i = max(0, min($i, count($units) - 1));
+    return round($bytes / pow(1024, $i), 2) . ' ' . $units[$i];
+};
+
+$assigned_mb = 0;
+$radios_unlimited = 0;
+foreach (($db['radios'] ?? []) as $r) {
+    $q = (int)($r['quota_mb'] ?? 0);
+    if ($q > 0) $assigned_mb += $q; else $radios_unlimited++;
+}
+
 echo json_encode([
     'cpu' => $cpu_percent,
     'ram_used' => $ram_used,
@@ -68,5 +92,11 @@ echo json_encode([
     'net_rx' => $rx_mb,
     'net_tx' => $tx_mb,
     'listeners' => $total_listeners,
-    'total_radios' => $total_radios
+    'total_radios' => $total_radios,
+    'disk_total_h' => ($disk_total > 0) ? $fmt_bytes($disk_total) : '-',
+    'disk_free_h'  => ($disk_free !== false) ? $fmt_bytes($disk_free) : '-',
+    'disk_used_h'  => $fmt_bytes($disk_used),
+    'disk_percent' => $disk_percent,
+    'assigned_h'   => $fmt_bytes($assigned_mb * 1024 * 1024),
+    'radios_unlimited' => $radios_unlimited
 ]);

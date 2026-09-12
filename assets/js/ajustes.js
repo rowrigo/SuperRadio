@@ -146,12 +146,99 @@ window.removeIntercalator = function(idx) {
     renderIntercalators();
 };
 
+// ===== CONTROL DE REPETICIÓN (por playlist) =====
+let repSelected = null;
+
+function repRefreshPlaylistOptions() {
+    const sel = document.getElementById('rep-playlist');
+    if (!sel) return;
+    if (repSelected === null || !appData.playlists[repSelected]) {
+        repSelected = appData.default_playlist || Object.keys(appData.playlists)[0] || 'general';
+    }
+    sel.innerHTML = '';
+    Object.keys(appData.playlists).forEach(p => {
+        const pInfo = appData.playlists[p] || {};
+        const icon = pInfo.tipo === 'archivos' ? '🎵' : '📁';
+        sel.innerHTML += `<option value="${p}">${icon} ${p}</option>`;
+    });
+    if (appData.playlists[repSelected]) sel.value = repSelected;
+}
+
+function repOnPlaylistChange() {
+    const sel = document.getElementById('rep-playlist');
+    if (sel && sel.value) repSelected = sel.value;
+    repRenderCard();
+}
+
+function repRenderCard() {
+    const sel = document.getElementById('rep-playlist');
+    if (!sel) return;
+    if (sel.options.length === 0) repRefreshPlaylistOptions();
+
+    const name = sel.value;
+    if (!appData.playlists[name]) { repRefreshPlaylistOptions(); return; }
+    repSelected = name;
+
+    const pl = appData.playlists[name];
+    if (typeof pl.allow_repeat !== 'boolean') pl.allow_repeat = !!pl.allow_repeat;
+    if (!Number.isFinite(pl.repeat_every_n_songs)) pl.repeat_every_n_songs = 0;
+
+    const isSeq = (pl.tipo === 'archivos');
+
+    const badge = document.getElementById('rep-tipo-badge');
+    if (badge) {
+        badge.textContent = isSeq ? 'Modo: Archivos (Secuencia)' : 'Modo: Carpetas (Rotación)';
+        badge.style.background = isSeq ? 'rgba(139,92,246,0.18)' : 'rgba(2,132,199,0.18)';
+        badge.style.color = isSeq ? '#c4b5fd' : '#7dd3fc';
+    }
+
+    const allowEl = document.getElementById('rep-allow');
+    const everyEl = document.getElementById('rep-every');
+    const everyWrap = document.getElementById('rep-every-wrap');
+    const controls = document.getElementById('rep-controls');
+    const note = document.getElementById('rep-note');
+
+    if (allowEl) {
+        allowEl.checked = !!pl.allow_repeat;
+        allowEl.disabled = isSeq;
+        allowEl.onchange = function () {
+            if (!appData.playlists[repSelected]) return;
+            appData.playlists[repSelected].allow_repeat = !!this.checked;
+            repRenderCard();
+        };
+    }
+    if (everyEl) {
+        everyEl.value = String(Math.max(0, Math.min(100, parseInt(pl.repeat_every_n_songs, 10) || 0)));
+        everyEl.disabled = isSeq || !pl.allow_repeat;
+        everyEl.onchange = function () {
+            if (!appData.playlists[repSelected]) return;
+            const v = Math.max(0, Math.min(100, parseInt(this.value, 10) || 0));
+            this.value = String(v);
+            appData.playlists[repSelected].repeat_every_n_songs = v;
+        };
+    }
+    if (controls) controls.style.opacity = isSeq ? '0.55' : '1';
+    if (everyWrap) everyWrap.style.opacity = (!isSeq && !pl.allow_repeat) ? '0.55' : '1';
+
+    if (note) {
+        if (isSeq) {
+            note.style.display = 'block';
+            note.style.color = '#fbbf24';
+            note.textContent = "Esta playlist es de secuencia exacta (Archivos): el motor la trata como repetible automáticamente y 'Repetir cada N' no aplica. Cambia el tipo en Playlists si quieres configurarlo.";
+        } else if (!pl.allow_repeat) {
+            note.style.display = 'block';
+            note.style.color = 'var(--text-muted)';
+            note.textContent = "Marca 'Permitir repetición' para activar el intercalado cada N canciones.";
+        } else {
+            note.style.display = 'none';
+            note.textContent = '';
+        }
+    }
+}
+
 function populateAjustesUI() {
     const tzSel = document.getElementById('set-timezone');
     const plSel = document.getElementById('set-default-playlist');
-    const voiceChk = document.getElementById('set-time-voice-enabled');
-    const voiceFld = document.getElementById('set-time-voice-folder');
-    const voiceBox = document.getElementById('box-time-voice-config');
 
     if (tzSel) tzSel.value = appData.timezone || 'America/Costa_Rica';
 
@@ -164,47 +251,54 @@ function populateAjustesUI() {
         });
     }
 
-    const timeVoice = appData.time_voice || { enabled: false, folder: '' };
-    if (voiceChk) {
-        voiceChk.checked = !!timeVoice.enabled;
-        if (voiceBox) voiceBox.style.display = voiceChk.checked ? 'block' : 'none';
-    }
+    const xf = appData.crossfade || { fade_in: 0, fade_out: 0 };
+    const xfIn = document.getElementById('set-xfade-in');
+    const xfOut = document.getElementById('set-xfade-out');
+    if (xfIn) xfIn.value = (typeof xf.fade_in === 'number' && isFinite(xf.fade_in)) ? xf.fade_in : 0;
+    if (xfOut) xfOut.value = (typeof xf.fade_out === 'number' && isFinite(xf.fade_out)) ? xf.fade_out : 0;
 
-    if (voiceFld) {
-        voiceFld.innerHTML = '<option value="">Selecciona la carpeta de audios...';
-        (appData.folders || []).forEach(f => {
-            voiceFld.innerHTML += `<option value="${f.name}" ${f.name === timeVoice.folder ? 'selected' : ''}>📁 ${f.name} (${f.count} audios)</option>`;
-        });
+    const hideBox = document.getElementById('hide-title-list');
+    if (hideBox) {
+        const hidden = Array.isArray(appData.hide_title_folders) ? appData.hide_title_folders : [];
+        const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        const folders = appData.folders || [];
+        hideBox.innerHTML = folders.length
+            ? folders.map(f => `<label style="display:flex; align-items:center; gap:7px; font-size:0.82rem; cursor:pointer;">
+                   <input type="checkbox" class="htf-chk" value="${esc(f.name)}"${hidden.includes(f.name) ? ' checked' : ''}>
+                   <span>📁 ${esc(f.name)} <span style="color:var(--text-muted);">(${f.count})</span></span>
+               </label>`).join('')
+            : '<span style="font-size:0.82rem; color:var(--text-muted);">No hay carpetas en la Musicateca.</span>';
     }
 
     renderIntercalators();
     const typeSel = document.getElementById('int-add-type');
     if (typeSel) onIntTypeChanged(typeSel.value);
-}
 
-function toggleTimeVoiceOptions(isChecked) {
-    const box = document.getElementById('box-time-voice-config');
-    if (box) box.style.display = isChecked ? 'block' : 'none';
+    repRefreshPlaylistOptions();
+    repRenderCard();
 }
 
 async function saveAjustes() {
     const tz = document.getElementById('set-timezone').value;
     const defPl = document.getElementById('set-default-playlist').value;
-    const voiceEnabled = document.getElementById('set-time-voice-enabled').checked;
-    const voiceFolder = document.getElementById('set-time-voice-folder').value;
-
-    if (voiceEnabled && !voiceFolder) {
-        return alert("Debes seleccionar la carpeta donde tienes los audios de la hora (00.mp3 a 23.mp3).");
-    }
 
     appData.timezone = tz;
     appData.default_playlist = defPl;
-    appData.time_voice = {
-        enabled: voiceEnabled,
-        folder: voiceFolder
+
+    const xfInEl = document.getElementById('set-xfade-in');
+    const xfOutEl = document.getElementById('set-xfade-out');
+    const clampXf = v => Math.round(Math.max(0, Math.min(5, (isFinite(parseFloat(v)) ? parseFloat(v) : 0))) * 2) / 2;
+    appData.crossfade = {
+        fade_in: clampXf(xfInEl ? xfInEl.value : 0),
+        fade_out: clampXf(xfOutEl ? xfOutEl.value : 0)
     };
+
     if (!Array.isArray(appData.intercalators)) appData.intercalators = [];
+
+    appData.hide_title_folders = Array.from(document.querySelectorAll('.htf-chk'))
+        .filter(c => c.checked).map(c => c.value);
 
     await persistToServer(true);
     renderIntercalators();
+    repRenderCard();
 }

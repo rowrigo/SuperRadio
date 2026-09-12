@@ -1,0 +1,23 @@
+// Permite al usuario www-data (php-fpm del panel) gestionar SOLO las unidades
+// del AutoDJ (radiopanel-autodj@<mount>): start/stop/restart, sin sudo ni
+// contraseña. Necesario porque Liquidsoap debe vivir fuera del cgroup de
+// php8.1-fpm: si no, cualquier reinicio/actualizacion de php-fpm lo mata
+// (incidente 11-sep-2026).
+//
+// NOTA: NO se concede org.freedesktop.systemd1.manage-unit-files (enable/disable)
+// porque polkit no expone el nombre de la unidad para esa accion (no se puede
+// limitar a radiopanel-autodj@*). El arranque tras reboot se resuelve con el
+// archivo-bandera .autodj_enabled + el watchdog (radiopanel-autodj-watchdog.timer).
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "www-data") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    if (action.id !== "org.freedesktop.systemd1.manage-units") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit") || "";
+    if (unit.indexOf("radiopanel-autodj@") === 0) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

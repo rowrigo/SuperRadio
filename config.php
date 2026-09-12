@@ -12,9 +12,12 @@ if (is_file(__DIR__ . '/config.local.php')) {
     require __DIR__ . '/config.local.php';
 }
 
-if (!defined('ENCRYPT_KEY'))    define('ENCRYPT_KEY', 'scr_radio_secret_key_2026_x89!'); // Clave de cifrado AES
+// Sin secretos por defecto A PROPÓSITO: los genera pkg/install.sh en
+// config.local.php (único por VPS). Si ENCRYPT_KEY queda vacío es que falta
+// config.local.php → ejecuta el instalador.
+if (!defined('ENCRYPT_KEY'))    define('ENCRYPT_KEY', ''); // Clave de cifrado AES (la define config.local.php)
 if (!defined('ENCRYPT_METHOD')) define('ENCRYPT_METHOD', 'AES-256-CBC');
-if (!defined('DEPLOY_TOKEN'))   define('DEPLOY_TOKEN', 'scr_deploy_ca601bb45bf46e6cfd46');
+if (!defined('DEPLOY_TOKEN'))   define('DEPLOY_TOKEN', ''); // token de deploy_update.php (lo define config.local.php)
 
 // =========================================
 // CONFIGURACIÓN DE STREAM / VPS
@@ -648,4 +651,48 @@ function sp_smtp_send_msg($cfg, $to, $subject, $body, &$err = '') {
     $cmd('QUIT');
     fclose($fp);
     return true;
+}
+
+// =============================================================
+// Saneo de texto rico (HTML básico permitido) para "Nosotros" de
+// la página pública. Allowlist estricta: sin scripts/estilos/
+// iframes ni atributos on*; solo <a href> con enlaces seguros.
+// =============================================================
+function rp_sanitize_rich_text($html) {
+    $html = (string)$html;
+    if ($html === '') return '';
+    $html = preg_replace('#<!--.*?-->#s', '', $html);
+    $danger = 'script|style|iframe|object|embed|form|input|textarea|select|button|option|link|meta|base|svg|math|video|audio|canvas|template|frame|frameset|applet|img|picture|source';
+    $html = preg_replace('#<\s*(' . $danger . ')\b[^>]*>.*?<\s*/\s*\1\s*>#is', '', $html);
+    $html = preg_replace('#<\s*/?\s*(' . $danger . ')\b[^>]*>#is', '', $html);
+    $allowed = 'p|br|strong|b|em|i|u|s|ul|ol|li|blockquote|h3|h4|h5|span|code|pre|a';
+    // Quitar cualquier etiqueta desconocida (no permitida) conservando su contenido
+    $html = preg_replace('#<\s*/?(?!' . $allowed . '\b)[a-zA-Z][^>]*>#is', '', $html);
+    // Reconstruir las etiquetas permitidas SOLO con atributos controlados
+    $html = preg_replace_callback('#<\s*(/?)(' . $allowed . ')\b((?:[^>"\']|"[^"]*"|\'[^\']*\')*)>#is', function ($m) {
+        if ($m[1] === '/') return '</' . strtolower($m[2]) . '>';
+        $tag = strtolower($m[2]);
+        $attrStr = trim($m[3]);
+        $out = '<' . $tag;
+        if ($tag === 'a') {
+            if (preg_match('/\bhref\s*=\s*("([^"]*)"|\'([^\']*)\'|([^\s>]+))/i', $attrStr, $hm)) {
+                $href = trim($hm[2] !== '' ? $hm[2] : ($hm[3] !== '' ? $hm[3] : $hm[4]), '"\'');
+                $href = html_entity_decode($href, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                if (preg_match('~^(https?:|mailto:|tel:|#|/)~i', $href)) {
+                    $out .= ' href="' . htmlspecialchars($href, ENT_QUOTES, 'UTF-8') . '"';
+                    if (stripos($href, 'http') === 0) {
+                        $out .= ' target="_blank" rel="noopener noreferrer"';
+                    }
+                }
+            }
+            if (preg_match('/\btitle\s*=\s*("([^"]*)"|\'([^\']*)\'|([^\s>]+))/i', $attrStr, $tm)) {
+                $title = trim($tm[2] !== '' ? $tm[2] : ($tm[3] !== '' ? $tm[3] : $tm[4]), '"\'');
+                $out .= ' title="' . htmlspecialchars(html_entity_decode($title, ENT_QUOTES | ENT_HTML5, 'UTF-8'), ENT_QUOTES, 'UTF-8') . '"';
+            }
+        }
+        return $out . '>';
+    }, $html);
+    // Escapar ampersands sueltos que no formen una entidad válida
+    $html = preg_replace('/&(?!(?:amp;|lt;|gt;|quot;|apos;|#\d{1,6};|#x[0-9a-fA-F]{1,6};))/i', '&amp;', $html);
+    return trim($html);
 }

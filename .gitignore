@@ -1,6 +1,34 @@
+# =========================================================
+# El docroot /var/www/radiopanel es TAMBIÉN el HOME de www-data:
+# nunca versionar los ficheros del home.
+# =========================================================
+.ssh/
+.bash_history
+.bashrc
+.cache/
+.config/
+.local/
+.npm/
+.launchpadlib/
+.lesshst
+.profile
+.wget-hsts
+
+# Herramientas del agente / IA
 .aider*
+.mimocode/
+
+# Secretos y estado persistente (NUNCA versionar)
 config.local.php
 database.json
+database.json.backup
+
+# Logs y artefactos de build / pruebas
 *.log
+*.save
+*.save.*
+auth_debug.log
+__test*
+_tmp*
+_deploy_tracker*
 superradio-package-*.tar.gz
-.mimocode/

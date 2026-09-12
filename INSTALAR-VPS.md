@@ -21,17 +21,23 @@ alta inicial y quien la complete se convierte en superadministrador
 
 ## 2. Generar el paquete (en el VPS/repo actual)
 
-En la máquina donde tienes el proyecto:
+`pkg/` vive **dentro del repo** (así un `git clone` ya trae el instalador).
+`make_package.sh` monta un staging con el código + `pkg/` y empaqueta desde ahí,
+excluyendo secretos y el home de `www-data`:
 
 ```bash
 cd /var/www/radiopanel
-bash pkg/make_package.sh 20260904
+bash pkg/make_package.sh 20260912
 ```
 
-Genera: `superradio-package-20260904.tar.gz`
+Genera: `superradio-package-20260912.tar.gz` en la raíz del repo.
+
+> En el VPS de producción, nginx **bloquea `/pkg/`** (`location ^~ /pkg/` → 404)
+> para que el instalador no sea descargable por web.
 
 > El paquete **no** incluye: música (`/var/media`), `database.json`,
-> `config.local.php`, logs, `.git`, archivos `.save`/`__test*` ni secretos.
+> `config.local.php`, logs, `.git`, el home de `www-data` (`.ssh`,
+> `.bash_history`, …), archivos `.save`/`__test*` ni secretos.
 
 ---
 
@@ -40,7 +46,7 @@ Genera: `superradio-package-20260904.tar.gz`
 Desde tu PC:
 
 ```bash
-scp superradio-package-20260904.tar.gz usuario@IP_DEL_VPS:/tmp/
+scp superradio-package-20260912.tar.gz usuario@IP_DEL_VPS:/tmp/
 ```
 
 En el VPS:
@@ -48,7 +54,7 @@ En el VPS:
 ```bash
 ssh usuario@IP_DEL_VPS
 cd /tmp
-tar -xzf superradio-package-20260904.tar.gz
+tar -xzf superradio-package-20260912.tar.gz
 ls        # deberías ver: pkg/, index.php, superradio.php, views/, etc.
 ```
 
@@ -93,8 +99,14 @@ El instalador:
 5. Crea un `database.json` limpio. **Sin superadmin** (por defecto): el primer
    acceso web al panel mostrará el alta inicial. Solo si pasas
    `--admin-user` / `--admin-pass` lo deja pre-creado.
-6. Arranca php-fpm, nginx e Icecast.
-7. (Opción A) Emite el certificado **Let's Encrypt** con `certbot --nginx`.
+6. Instala el **servicio systemd del AutoDJ** (`radiopanel-autodj@<mount>`):
+   unidad template con `Restart=always`, regla **polkit** para que `www-data`
+   la gestione sin contraseña, y **watchdog** (`radiopanel-autodj-watchdog.timer`,
+   cada 2 min) que arranca las emisoras tras un reboot o si se caen. Así
+   Liquidsoap corre **fuera del cgroup de php-fpm**: un reinicio o actualización
+   de php-fpm ya **no** tumba los streams.
+7. Arranca php-fpm, nginx e Icecast.
+8. (Opción A) Emite el certificado **Let's Encrypt** con `certbot --nginx`.
 
 ---
 
@@ -139,9 +151,9 @@ Emisoras/Clientes (editar cliente).
 
 1. Abre el login único: `https://radio.tudominio.com/` (o `http://…` si usaste
    `--no-ssl`) y entra con el superadmin que creaste.
-3. Crea una radio (mount, p. ej. `prueba`) → Liquidsoap arranca solo.
-4. El stream queda en `https://radio.tudominio.com/prueba`.
-5. Sube música desde **Musicateca** y mira el player público
+2. Crea una radio (mount, p. ej. `prueba`) → Liquidsoap arranca solo.
+3. El stream queda en `https://radio.tudominio.com/prueba`.
+4. Sube música desde **Musicateca** y mira el player público
    (Página Pública → Personalizar).
 
 Comprobaciones rápidas desde el VPS:
@@ -150,6 +162,8 @@ Comprobaciones rápidas desde el VPS:
 curl -I https://radio.tudominio.com/index.php        # 200
 curl -s http://127.0.0.1:8000/status-json.xsl        # Icecast responde
 systemctl status nginx php8.1-fpm icecast2           # activos
+systemctl status radiopanel-autodj@<mount>           # unidad del AutoDJ (activa)
+systemctl status radiopanel-autodj-watchdog.timer    # watchdog cada 2 min
 ```
 
 ---
@@ -160,6 +174,12 @@ systemctl status nginx php8.1-fpm icecast2           # activos
   El panel usa sintaxis de LS 2.0.2. Instala el `.deb` de **2.0.2** manualmente y
   fíjalo: `apt-mark hold liquidsoap`. Si una radio no monta, revisa:
   `tail -f /var/media/radios/<mount>/liquidsoap.log`.
+- **Una emisora no suena**: mira su **unidad systemd**, no un proceso suelto —
+  `systemctl status radiopanel-autodj@<mount>` y
+  `journalctl -u radiopanel-autodj@<mount> -n 50`. El watchdog la re-arranca en
+  ~2 min si se cayó, y tras un reboot la levanta en ~90 s. El panel la gestiona
+  sin contraseña (regla polkit); al pulsar Iniciar/Reiniciar regenera el `.liq`
+  y lo valida con `liquidsoap --check` antes de arrancar.
 - **certbot falla**: casi siempre es que el **DNS todavía no apunta** al VPS.
   Repite luego: `sudo certbot --nginx -d radio.tudominio.com --redirect`.
 - **Puertos ocupados**: el instalador avisa pero no bloquea. Asegúrate de tener
