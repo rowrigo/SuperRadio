@@ -27,17 +27,14 @@ sin framework ni base de datos externa (los datos viven en `database.json`).
 El instalador prepara todo (nginx, PHP-FPM, Icecast, Liquidsoap, ffmpeg,
 certbot) y despliega el código en **`/var/www/radiopanel`**.
 
-Opción A — desde la Release (paquete listo):
+👉 **¿Es tu primera vez?** Hay una guía paso a paso para principiantes, de cero a
+la radio sonando: **[INSTALAR-DESDE-GITHUB.md](INSTALAR-DESDE-GITHUB.md)**.
+
+La forma recomendada es **clonar el repositorio**, así instalas **el código
+actual**:
 
 ```bash
-wget https://github.com/rowrigo/SuperRadio/releases/download/v1.0/superradio-package-20260904.tar.gz
-tar -xzf superradio-package-20260904.tar.gz
-sudo ./pkg/install.sh --domain=radio.tudominio.com --email=tu@correo.com
-```
-
-Opción B — desde el repositorio:
-
-```bash
+apt-get install -y git
 git clone https://github.com/rowrigo/SuperRadio.git /root/superradio-src
 cd /root/superradio-src
 sudo ./pkg/install.sh --domain=radio.tudominio.com --email=tu@correo.com
@@ -46,6 +43,12 @@ sudo ./pkg/install.sh --domain=radio.tudominio.com --email=tu@correo.com
 > Clona/fuente en una carpeta aparte (p. ej. `/root/superradio-src`): el
 > instalador copia el código a `/var/www/radiopanel`. No lo ejecutes desde
 > dentro de `/var/www/radiopanel`.
+
+> ⚠️ **Sobre las Releases:** el paquete publicado en la Release `v1.0`
+> (`superradio-package-20260904.tar.gz`) es un **snapshot del 5-sep-2026** y
+> **no incluye las mejoras posteriores**. Para instalar la versión actual usa el
+> clon de arriba; si prefieres un paquete, genera uno al día con
+> `bash pkg/make_package.sh <fecha>`.
 
 Después de instalar:
 
@@ -60,8 +63,11 @@ Flags útiles del instalador: `--no-ssl` (probar antes del DNS),
 
 ## Documentación
 
-- `INSTALAR-VPS.md` — guía completa: requisitos, generación de paquete,
-  instalación paso a paso, primer acceso, solución de problemas.
+- `INSTALAR-DESDE-GITHUB.md` — **guía para principiantes**: instalar desde
+  GitHub en un VPS nuevo, paso a paso (SSH, DNS, firewall, instalador, primer
+  acceso, crear la emisora).
+- `INSTALAR-VPS.md` — guía **técnica** completa: requisitos, generación de
+  paquete, instalación paso a paso, primer acceso, solución de problemas.
 - `pkg/README.md` — cómo generar el paquete instalable
   (`bash pkg/make_package.sh <fecha>`) y publicar actualizaciones.
 

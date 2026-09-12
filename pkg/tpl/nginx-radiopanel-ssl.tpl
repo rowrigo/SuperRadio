@@ -31,6 +31,14 @@ server {
         return 404;
     }
 
+    # Bloqueo de archivos ocultos (.git, .ssh, .bash_history, .env, ...).
+    # El docroot es también el HOME de www-data, así que sin esto quedan
+    # descargables por web. Excepción: .well-known (validación ACME de certbot).
+    location ~ /\.(?!well-known) {
+        deny all;
+        return 404;
+    }
+
     # Proxy dinámico para todos los streams hacia Icecast
     location ~ ^/([a-zA-Z0-9_-]+)$ {
         proxy_pass http://127.0.0.1:8000/$1;
